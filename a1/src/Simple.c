@@ -63,6 +63,7 @@ static const char background  = '&';
 
 /* static function prototypes */
 static int setup(struct Simple *s);
+static int execute_input(struct Input *input, int *background_ptr, int *exit_status_ptr);
 static int forground_child(const int pid_child, int *exit_condition_ptr);
 static void check_background_processes(struct Simple *s);
 static void make_history(struct Simple *s);
@@ -135,10 +136,13 @@ void SimpleHistory(void) {
 /** redoes a command from the authoritative Simple
  @return non-zero on success */
 int SimpleRedo(const char *arg) {
-	int ret = 0, i, no;
-	struct Input *selected;
+	int i, no;
+	int background, exit_status;
+	int delta;
+	struct Input *selected, *replace;
 
 	if(!simple) return 0;
+	/* select the operation */
 	if(!arg) {
 		if((no = simple->command_no - 2) <= 0) return 0;
 		/* fixme: make an index */
@@ -147,12 +151,46 @@ int SimpleRedo(const char *arg) {
 		}
 		if(i >= history_size) return 0;
 		selected = &simple->history[i];
-		fprintf(stderr, "redo: %s\n", selected->args[0]);
-		return -1;
 	} else {
-		fprintf(stderr, "Not implemented.\n");
+		int len = strlen(arg);
+		int found = -1;
+
+		no = 0;
+		/* fixme: also make an index */
+		for(i = 0; i < history_size; i++) {
+			/* flag 0 not a history */
+			if(!simple->history[i].no) continue;
+			/* not a partial match */
+			if(strncmp(arg, simple->history[i].args[0], len)) continue;
+			/* no is already pointing to a newer one */
+			if(no >= simple->history[i].no) continue;
+			/* it's good */
+			no = simple->history[i].no;
+			found = i;
+		}
+		if(found < 0) {
+			fprintf(stderr, "Didn't find '%s.'\n", arg);
+			return 0;
+		}
+		selected = &simple->history[found];
 	}
-	return ret;
+	fprintf(stderr, "Redo: %s\n", selected->args[0]);
+
+	replace = &simple->input;
+	memcpy(replace, selected, sizeof(struct Input));
+	/* this is a hack to get the pointers adjusted */
+	delta = selected->inputBuffer - replace->inputBuffer;
+	for(i = 0; i < input_args; i++) {
+		if(replace->args[i]) replace->args[i] -= delta;
+	}
+
+	if(!execute_input(replace, &background, &exit_status)) {
+		/* fixme */
+		fprintf(stderr, "Simple::Redo: exit uncleanly.\n");
+		exit(EXIT_FAILURE);
+	}
+
+	return background ? -1 : (exit_status == EXIT_SUCCESS ? -1 : 0);
 }
 
 /* private */
@@ -162,9 +200,8 @@ int SimpleRedo(const char *arg) {
  @param argv the arguments
  @return     either EXIT_SUCCESS or EXIT_FAILURE */
 int main(int argc, char **argv) {
-	int child, exit_status, ret = EXIT_SUCCESS;
+	int new_child, exit_status;
 	struct Simple *simple;
-	int (*cmd)(char **);
 
 	/* no command line switches */
 	if(argc > 1) {
@@ -180,74 +217,37 @@ int main(int argc, char **argv) {
 		printf(" COMMAND->\n");
 
 		/* get next command */
-		if(!setup(simple)) {
-			check_background_processes(simple);
-			break;
-		}
+		if(!setup(simple)) break;
 
-		/* if it's a blank line, check for exit of bg proc */
-		if(!simple->input.args[0]) {
-			check_background_processes(simple);
-			continue;
-		}
+		/* we'll just check them every time a command is entered */
+		check_background_processes(simple);
 
-		/* check for built-in commands with binary search; can not run in bg */
-		if((cmd = CommandSearch(simple->input.args[0]))) {
-			if(!(*cmd)(simple->input.args)) break;
-			make_history(simple);
-			continue;
-		}
+		/* if it's a blank line */
+		if(!simple->input.args[0]) continue;
 
 		/* debug */
 		for(i = 0; simple->input.args[i]; i++) fprintf(stderr, "args[%d] <%s>\n", i, simple->input.args[i]);
 
-		/* "the steps are:
-		 (1) fork a child process using fork()
-		 (2) the child process will invoke execvp()
-		 (3) if background == 1, the parent will wait,
-		 otherwise returns to the setup() function."
-		 I assume the other way around; this is overly-complex? why would you
-		 fork if you didn't need to run in the background? whatever */
+		if(!execute_input(&simple->input, &new_child, &exit_status)) {
+			return EXIT_FAILURE;
+		}
 
-		if((child = fork()) == -1) {
-			/* messed up */
-			perror(simple->input.args[0]);
-			ret = EXIT_FAILURE;
-			break;
-		} else if(child) {
-			/* this is the parent */
-			fprintf(stderr, "Parent: created child, pid %d, %sground.\n",
-					child, simple->input.background ? "back" : "fore");
-			if(!simple->input.background) {
-				if(!forground_child(child, &exit_status)) continue;
-				/* only the successful commands will be entered */
-				if(exit_status == EXIT_SUCCESS) make_history(simple);
-			} else {
-				if(simple->noChild >= max_child) {
-					fprintf(stderr, "Hit maximum %d processes running in background.\n", max_child);
-				} else {
-					simple->pidChild[simple->noChild++] = child;
-					/* this is more abstact; how do you check the exit status
-					 of a currently running process? we'll trust it will run
-					 correctly and enter it */
-					make_history(simple);
-				}
-			}
-			/* every time it checks what processes have exited */
-			check_background_processes(simple);
+		if(!new_child) {
+			if(exit_status == EXIT_SUCCESS) make_history(simple);
+		} else if(simple->noChild < max_child) {
+			simple->pidChild[simple->noChild++] = new_child;
+			/* the history of background processes is more abstact; how do you
+			 check the exit status of a currently running process? we'll trust it
+			 will run correctly and enter it . . . */
+			make_history(simple);
 		} else {
-			/* this is the child */
-			fprintf(stderr, "Child: exec %s.\n", simple->input.args[0]);
-			if((ret = execvp(simple->input.args[0], simple->input.args)) == -1) {
-				perror(simple->input.args[0]);
-			}
-			break;
+			fprintf(stderr, "Hit maximum %d processes running in background; the process was forgotten!\n", max_child);
 		}
 	}
 
 	Simple_(&simple);
 
-	return ret;
+	return EXIT_SUCCESS;
 }
 
 /** setup() reads in the next command line, separating it into distinct tokens
@@ -290,6 +290,55 @@ static int setup(struct Simple *s) {
 	/* advance the counter */
 	s->input.no = s->command_no++;
 
+	return -1;
+}
+
+/** "the steps are:
+ (1) fork a child process using fork()
+ (2) the child process will invoke execvp()
+ (3) if background == 1, the parent will wait,
+ otherwise returns to the setup() function."
+ I assume the other way around; this is overly-complex? why would you
+ fork if you didn't need to run in the background? whatever
+ @param input           a valid input
+ @param background_ptr  a pointer to int which specifies what background process
+                        was created or zero (which you should so totally remember)
+ @param exit_status_ptr if the command is in the foreground, this is it's exit
+                        status
+ @return                non-zero on success */
+/* fixme: no exec random; only simple->input; redo copies */
+static int execute_input(struct Input *input, int *background_ptr, int *exit_status_ptr) {
+	int child;
+	int (*cmd)(char **);
+
+	*background_ptr  = 0;
+	*exit_status_ptr = 0;
+
+	if((cmd = CommandSearch(input->args[0]))) {
+		/* check for built-in commands with binary search; can not run in bg */
+		return (*cmd)(input->args);
+	} else if((child = fork()) == -1) {
+		/* messed up -- get out */
+		perror(input->args[0]);
+		return 0;
+	} else if(child) {
+		/* this is the parent */
+		fprintf(stderr, "Parent: created child, pid %d, %sground.\n",
+				child, input->background ? "back" : "fore");
+		if(!input->background) {
+			if(!forground_child(child, exit_status_ptr)) return 0;
+		} else {
+			*background_ptr = child;
+		}
+	} else {
+		/* this is the child */
+		fprintf(stderr, "Child: exec %s.\n", simple->input.args[0]);
+		/* execvp does not return exept if error (horrible design) */
+		if(execvp(simple->input.args[0], simple->input.args) == -1) {
+			perror(simple->input.args[0]);
+			return 0;
+		}
+	}
 	return -1;
 }
 
@@ -349,7 +398,8 @@ static void check_background_processes(struct Simple *s) {
 	}
 }
 
-/** puts an entry in the history */
+/** puts an entry in the history
+ @param s a valid Simple */
 static void make_history(struct Simple *s) {
 	int delta;
 	int i;

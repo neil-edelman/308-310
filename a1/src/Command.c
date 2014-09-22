@@ -14,8 +14,9 @@ static int cmd_comp(const void *key, const void *elem);
 static int cmd_cd(char *args[]);
 static int cmd_echo(char *args[]);
 static int cmd_exit(char *args[]);
+static int cmd_fg(char *args[]);
 static int cmd_history(char *args[]);
-static int cmd_not(char *args[]);
+static int cmd_jobs(char *args[]);
 static int cmd_pwd(char *args[]);
 static int cmd_redo(char *args[]);
 
@@ -27,9 +28,9 @@ static const struct Command {
 	{ "cd",     &cmd_cd },
 	{ "echo",   &cmd_echo },
 	{ "exit",   &cmd_exit },
-	{ "fg",     &cmd_not },
+	{ "fg",     &cmd_fg },
 	{ "history",&cmd_history },
-	{ "jobs",   &cmd_not },
+	{ "jobs",   &cmd_jobs },
 	{ "pwd",    &cmd_pwd },
 	{ "r",      &cmd_redo }
 };
@@ -56,6 +57,7 @@ static int cmd_comp(const void *key, const void *elem) {
 
 static int cmd_cd(char *args[]) {
 	printf("cd!\n");
+	/* chdir() */
 	return -1;
 }
 
@@ -74,6 +76,10 @@ static int cmd_exit(char *args[]) {
 	return 0;
 }
 
+static int cmd_fg(char *args[]) {
+	return -1;
+}
+
 static int cmd_history(char *args[]) {
 	if(args[1]) {
 		fprintf(stderr, "usage: history\n");
@@ -83,19 +89,21 @@ static int cmd_history(char *args[]) {
 	return -1;
 }
 
-static int cmd_not(char *args[]) {
+static int cmd_jobs(char *args[]) {
 	printf("Not implemented.\n");
 	return -1;
 }
 
 static int cmd_pwd(char *args[]) {
 	printf("pwd!\n");
+	/* getcwd() */
 	return -1;
 }
 
+/* FIXME: AVOID GETTING INTO AN INFINITE LOOP! */
 static int cmd_redo(char *args[]) {
 	if(args[2]) {
-		fprintf(stderr, "usage: r [first letters]\n");
+		fprintf(stderr, "usage: r [first letters] (%s?)\n", args[2]);
 	} else if(!SimpleRedo(args[1])) {
 		fprintf(stderr, "Could not run <%s> again.\n", args[0]);
 	}
