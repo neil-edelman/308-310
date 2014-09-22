@@ -7,27 +7,31 @@
 #include <stdlib.h> /* malloc free */
 #include <stdio.h>  /* fprintf */
 #include <string.h> /* strcmp */
+#include "Simple.h"
 #include "Command.h"
 
 static int cmd_comp(const void *key, const void *elem);
-static int cmd_not(char *args[]);
 static int cmd_cd(char *args[]);
 static int cmd_echo(char *args[]);
 static int cmd_exit(char *args[]);
+static int cmd_history(char *args[]);
+static int cmd_not(char *args[]);
 static int cmd_pwd(char *args[]);
+static int cmd_redo(char *args[]);
 
 /* ascii-betical */
 static const struct Command {
 	char *name;
 	int  (*fn)(char **);
 } builtin[] = {
-	{ "cd",   &cmd_cd },
-	{ "echo", &cmd_echo },
-	{ "exit", &cmd_exit },
-	{ "fg",   &cmd_not },
-	{ "history",&cmd_not },
-	{ "jobs", &cmd_not },
-	{ "pwd",  &cmd_pwd }
+	{ "cd",     &cmd_cd },
+	{ "echo",   &cmd_echo },
+	{ "exit",   &cmd_exit },
+	{ "fg",     &cmd_not },
+	{ "history",&cmd_history },
+	{ "jobs",   &cmd_not },
+	{ "pwd",    &cmd_pwd },
+	{ "r",      &cmd_redo }
 };
 
 /** (static) search
@@ -50,11 +54,6 @@ static int cmd_comp(const void *key, const void *elem) {
 
 /* these are elements of builtin */
 
-static int cmd_not(char *args[]) {
-	printf("Not implemented.\n");
-	return -1;
-}
-
 static int cmd_cd(char *args[]) {
 	printf("cd!\n");
 	return -1;
@@ -75,7 +74,30 @@ static int cmd_exit(char *args[]) {
 	return 0;
 }
 
+static int cmd_history(char *args[]) {
+	if(args[1]) {
+		fprintf(stderr, "usage: history\n");
+	} else {
+		SimpleHistory();
+	}
+	return -1;
+}
+
+static int cmd_not(char *args[]) {
+	printf("Not implemented.\n");
+	return -1;
+}
+
 static int cmd_pwd(char *args[]) {
 	printf("pwd!\n");
+	return -1;
+}
+
+static int cmd_redo(char *args[]) {
+	if(args[2]) {
+		fprintf(stderr, "usage: r [first letters]\n");
+	} else if(!SimpleRedo(args[1])) {
+		fprintf(stderr, "Could not run <%s> again.\n", args[0]);
+	}
 	return -1;
 }
