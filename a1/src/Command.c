@@ -11,19 +11,19 @@
 #include "Command.h"
 
 static int cmd_comp(const void *key, const void *elem);
-static int cmd_cd(char *args[]);
-static int cmd_echo(char *args[]);
-static int cmd_exit(char *args[]);
-static int cmd_fg(char *args[]);
-static int cmd_history(char *args[]);
-static int cmd_jobs(char *args[]);
-static int cmd_pwd(char *args[]);
-static int cmd_redo(char *args[]);
+static int cmd_cd(char *args[], int *);
+static int cmd_echo(char *args[], int *);
+static int cmd_exit(char *args[], int *);
+static int cmd_fg(char *args[], int *);
+static int cmd_history(char *args[], int *);
+static int cmd_jobs(char *args[], int *);
+static int cmd_pwd(char *args[], int *);
+static int cmd_redo(char *args[], int *);
 
 /* ascii-betical */
 static const struct Command {
 	char *name;
-	int  (*fn)(char **);
+	int  (*fn)(char **, int *);
 } builtin[] = {
 	{ "cd",     &cmd_cd },
 	{ "echo",   &cmd_echo },
@@ -38,7 +38,7 @@ static const struct Command {
 /** (static) search
  @param  cmd what your searching for
  @return fn  what it corresponds to, or null */
-int (*CommandSearch(const char *cmd))(char **) {
+int (*CommandSearch(const char *cmd))(char **, int *) {
 	struct Command *c = bsearch(cmd, builtin,
 								sizeof(builtin) / sizeof(struct Command),
 								sizeof(struct Command),
@@ -55,13 +55,13 @@ static int cmd_comp(const void *key, const void *elem) {
 
 /* these are elements of builtin */
 
-static int cmd_cd(char *args[]) {
+static int cmd_cd(char *args[], int *exit_ptr) {
 	printf("cd!\n");
 	/* chdir() */
 	return -1;
 }
 
-static int cmd_echo(char *args[]) {
+static int cmd_echo(char *args[], int *exit_ptr) {
 	int i;
 
 	for(i = 0; args[i]; i++) {
@@ -71,16 +71,17 @@ static int cmd_echo(char *args[]) {
 	return -1;
 }
 
-static int cmd_exit(char *args[]) {
+static int cmd_exit(char *args[], int *exit_ptr) {
 	printf("Goodday to you!\n");
-	return 0;
-}
-
-static int cmd_fg(char *args[]) {
+	*exit_ptr = -1;
 	return -1;
 }
 
-static int cmd_history(char *args[]) {
+static int cmd_fg(char *args[], int *exit_ptr) {
+	return -1;
+}
+
+static int cmd_history(char *args[], int *exit_ptr) {
 	if(args[1]) {
 		fprintf(stderr, "usage: history\n");
 	} else {
@@ -89,23 +90,29 @@ static int cmd_history(char *args[]) {
 	return -1;
 }
 
-static int cmd_jobs(char *args[]) {
+static int cmd_jobs(char *args[], int *exit_ptr) {
 	printf("Not implemented.\n");
 	return -1;
 }
 
-static int cmd_pwd(char *args[]) {
+static int cmd_pwd(char *args[], int *exit_ptr) {
 	printf("pwd!\n");
 	/* getcwd() */
 	return -1;
 }
 
 /* FIXME: AVOID GETTING INTO AN INFINITE LOOP! */
-static int cmd_redo(char *args[]) {
+static int cmd_redo(char *args[], int *exit_ptr) {
+	int exec;
+
 	if(args[2]) {
 		fprintf(stderr, "usage: r [first letters] (%s?)\n", args[2]);
-	} else if(!SimpleRedo(args[1])) {
-		fprintf(stderr, "Could not run <%s> again.\n", args[0]);
+		return 0;
+	} else if(!SimpleRedo(args[1], &exec)) {
+		fprintf(stderr, "Could not run re-do again.\n");
+		return 0;
 	}
-	return -1;
+
+	/* pass the execute error status to the main programme */
+	return exec;
 }

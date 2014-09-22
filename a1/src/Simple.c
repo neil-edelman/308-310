@@ -20,8 +20,6 @@
  @version 1
  @since 2014 */
 
-/* fixme: ls & doesn't work */
-
 #include <stdlib.h> /* malloc free EXIT_SUCCESS */
 #include <stdio.h>  /* fprintf */
 #include <string.h> /* strtok memcpy */
@@ -38,11 +36,24 @@ static const int versionMajor  = 1;
 static const int versionMinor  = 0;
 
 /* private */
+enum Result {
+	R_INVALID = 1,
+	R_BACKGROUND = 2,
+	R_BUILTIN = 4,
+	R_SUCCESS = 8,
+	R_FORK_ERROR = 16,
+	R_ABNORMAL = 32,
+	R_EXEC_ERROR = 64,
+	R_FAILURE = 128
+};
+
+/* private */
 struct Input {
 	int  no;              /* no = 0: this is not valid */
 	char inputBuffer[81]; /* "80 chars per line, per command, should be enough." lol */
 	char *args[40];       /* pointers to inputBuffer, null-terminated */
-	int  background;
+	int  pid_child;
+	enum Result result;
 };
 static const int input_size = sizeof((struct Input *)0)->inputBuffer / sizeof(char);
 static const int input_args = sizeof((struct Input *)0)->args / sizeof(char *);
@@ -51,7 +62,7 @@ static const int input_args = sizeof((struct Input *)0)->args / sizeof(char *);
 struct Simple {
 	struct Input input;
 	struct Input history[10];
-	int          command_no;
+	int          command_no;  /* running total */
 	int          noChild;
 	int          pidChild[40];
 };
@@ -63,12 +74,15 @@ static const char background  = '&';
 
 /* static function prototypes */
 static int setup(struct Simple *s);
-static int execute_input(struct Input *input, int *background_ptr, int *exit_status_ptr);
-static int forground_child(const int pid_child, int *exit_condition_ptr);
+static void setup_redo(struct Simple *s, const struct Input *selected);
+static int execute_input(struct Input *input);
+static int wait_child(const int pid_child, const int bg, int *running_ptr, int *exit_condition_ptr);
 static void check_background_processes(struct Simple *s);
 static void make_history(struct Simple *s);
+static void phist(void);
 static void usage(void);
 
+/* authoritative, used for when we guess (but really there's only one) */
 struct Simple *simple;
 
 /* public */
@@ -87,8 +101,12 @@ struct Simple *Simple(void) {
 	s->input.no             = s->command_no;
 	s->input.inputBuffer[0] ='\0';
 	s->input.args[0]        = 0; /* null-terminated */
-	s->input.background     = 0; /* default not starting a process running in background */
-	for(i = 0; i < history_size; i++) s->history[i].no = 0;
+	s->input.pid_child      = 0;
+	s->input.result         = 0;
+	for(i = 0; i < history_size; i++) {
+		s->history[i].no = 0;
+		s->history[i].result = R_INVALID;
+	}
 	s->noChild        = 0;
 	fprintf(stderr, "Simple: new, cmd no %d #%p. This is %sthe authoritative copy.\n",
 			s->command_no, (void *)s, simple ? "not " : "");
@@ -118,7 +136,7 @@ void SimpleHistory(void) {
 	for(i = 0; i < history_size; i++) {
 		h = &simple->history[i];
 		if(!h->no) continue;
-		printf("%d:\t%d\t%s\t", i, h->no, h->background ? "yes" : "no");
+		printf("%d:\t%d\t%s\t", i, h->no, h->result & R_BACKGROUND ? "yes" : "no");
 		first = -1;
 		for(j = 0; j < input_args; j++) {
 			if(!first) {
@@ -134,12 +152,12 @@ void SimpleHistory(void) {
 }
 
 /** redoes a command from the authoritative Simple
- @return non-zero on success */
-int SimpleRedo(const char *arg) {
-	int i, no;
-	int background, exit_status;
-	int delta;
-	struct Input *selected, *replace;
+ @param arg      the first few letters of the command
+ @param exec_ptr if it gets to this, whatever execute_input returned
+ @return         non-zero on success */
+int SimpleRedo(const char *arg, int *exec_ptr) {
+	int i, no, exec;
+	struct Input *selected;
 
 	if(!simple) return 0;
 	/* select the operation */
@@ -176,21 +194,14 @@ int SimpleRedo(const char *arg) {
 	}
 	fprintf(stderr, "Redo: %s\n", selected->args[0]);
 
-	replace = &simple->input;
-	memcpy(replace, selected, sizeof(struct Input));
-	/* this is a hack to get the pointers adjusted */
-	delta = selected->inputBuffer - replace->inputBuffer;
-	for(i = 0; i < input_args; i++) {
-		if(replace->args[i]) replace->args[i] -= delta;
-	}
+	setup_redo(simple, selected);
 
-	if(!execute_input(replace, &background, &exit_status)) {
-		/* fixme */
-		fprintf(stderr, "Simple::Redo: exit uncleanly.\n");
-		exit(EXIT_FAILURE);
-	}
+	exec = execute_input(&simple->input);
+	if(exec_ptr) *exec_ptr = exec;
 
-	return background ? -1 : (exit_status == EXIT_SUCCESS ? -1 : 0);
+	phist();
+
+	return -1;
 }
 
 /* private */
@@ -200,7 +211,6 @@ int SimpleRedo(const char *arg) {
  @param argv the arguments
  @return     either EXIT_SUCCESS or EXIT_FAILURE */
 int main(int argc, char **argv) {
-	int new_child, exit_status;
 	struct Simple *simple;
 
 	/* no command line switches */
@@ -214,12 +224,14 @@ int main(int argc, char **argv) {
 	for( ; ; ) { /* Program terminates normally inside setup */
 		int i;
 
+		phist();
 		printf(" COMMAND->\n");
 
 		/* get next command */
 		if(!setup(simple)) break;
 
-		/* we'll just check them every time a command is entered */
+		/* we'll just check them every time a command is entered;
+		 seems like a good time */
 		check_background_processes(simple);
 
 		/* if it's a blank line */
@@ -228,21 +240,23 @@ int main(int argc, char **argv) {
 		/* debug */
 		for(i = 0; simple->input.args[i]; i++) fprintf(stderr, "args[%d] <%s>\n", i, simple->input.args[i]);
 
-		if(!execute_input(&simple->input, &new_child, &exit_status)) {
-			return EXIT_FAILURE;
+		/* execute! */
+		if(!execute_input(&simple->input)) return EXIT_FAILURE;
+
+		/* keep track of children */
+		if(simple->input.pid_child) {
+			if(simple->noChild < max_child) {
+				simple->pidChild[simple->noChild++] = simple->input.pid_child;
+				fprintf(stderr, "Child buffer stored pid %d.\n", simple->input.pid_child);
+			} else {
+				fprintf(stderr, "Error: hit maximum %d processes running in background; the process was forgotten!\n", max_child);
+			}
 		}
 
-		if(!new_child) {
-			if(exit_status == EXIT_SUCCESS) make_history(simple);
-		} else if(simple->noChild < max_child) {
-			simple->pidChild[simple->noChild++] = new_child;
-			/* the history of background processes is more abstact; how do you
-			 check the exit status of a currently running process? we'll trust it
-			 will run correctly and enter it . . . */
-			make_history(simple);
-		} else {
-			fprintf(stderr, "Hit maximum %d processes running in background; the process was forgotten!\n", max_child);
-		}
+		/* add history */
+		if((simple->input.result & R_SUCCESS)) make_history(simple);
+
+		phist();
 	}
 
 	Simple_(&simple);
@@ -259,11 +273,17 @@ static int setup(struct Simple *s) {
 	int i;
 	char *tok;
 
-	/* examine every character in the inputBuffer */
-	/* no. -Neil */
+	/* "examine every character in the inputBuffer" */
+	/* no. */
 
+	/* clear the possibly used bits from last time */
+	s->input.result    = 0;
+	s->input.pid_child = 0;
 	/* yay ANSI */
-	if(!fgets(s->input.inputBuffer, input_size, stdin)) return 0;
+	if(!fgets(s->input.inputBuffer, input_size, stdin)) {
+		s->input.result = R_INVALID;
+		return 0;
+	}
 	/* strsep the command into args; ignores args >= input_args */
 	for(tok = strtok(s->input.inputBuffer, delimiters), i = 0;
 		tok && i < input_args - 1;
@@ -271,7 +291,6 @@ static int setup(struct Simple *s) {
 		s->input.args[i++] = tok;
 	}
 	s->input.args[i]    = 0; /* null-terminated */
-	s->input.background = 0;
 	/* if the last char is an '&,' set background */
 	if(i > 0) {
 		int len;
@@ -282,15 +301,39 @@ static int setup(struct Simple *s) {
 		/* assert(len > 0); */
 		ch   = last + len - 1;
 		if(*ch == background) {
-			*ch = '\0';
-			s->input.background = -1;
-			if(len <= 1) i--;   /* & on it's own */
+			if(len <= 1) { /* foo & */
+				i--;
+				s->input.args[i] = 0;
+			} else {       /* foo& */
+				*ch = '\0';
+			}
+			s->input.result |= R_BACKGROUND;
 		}
+		/* advance the counter */
+		s->input.no = s->command_no++;
 	}
-	/* advance the counter */
-	s->input.no = s->command_no++;
 
 	return -1;
+}
+
+/** sets up a new command to be from the history
+ @param s        a valid simple
+ @param selected a history value */
+static void setup_redo(struct Simple *s, const struct Input *selected) {
+	int delta, i;
+	struct Input *input = &s->input;
+
+	/* fixme: should create a new id, right? */
+
+	memcpy(input, selected, sizeof(struct Input));
+	/* only keep these */
+	input->result &= R_BACKGROUND | R_INVALID;
+	input->pid_child = 0;
+	/* this is a hack to get the pointers adjusted */
+	delta = selected->inputBuffer - input->inputBuffer;
+	for(i = 0; i < input_args; i++) {
+		if(input->args[i]) input->args[i] -= delta;
+	}
 }
 
 /** "the steps are:
@@ -301,41 +344,67 @@ static int setup(struct Simple *s) {
  I assume the other way around; this is overly-complex? why would you
  fork if you didn't need to run in the background? whatever
  @param input           a valid input
- @param background_ptr  a pointer to int which specifies what background process
-                        was created or zero (which you should so totally remember)
- @param exit_status_ptr if the command is in the foreground, this is it's exit
-                        status
  @return                non-zero on success */
-/* fixme: no exec random; only simple->input; redo copies */
-static int execute_input(struct Input *input, int *background_ptr, int *exit_status_ptr) {
-	int child;
-	int (*cmd)(char **);
+static int execute_input(struct Input *input) {
+	int pid_child;
+	int (*cmd)(char **, int *);
 
-	*background_ptr  = 0;
-	*exit_status_ptr = 0;
+	if(input->result & R_INVALID) {
+		fprintf(stderr, "Tried to run input that's flagged as invalid.\n");
+		return 0;
+	} else if((cmd = CommandSearch(input->args[0]))) {
+		int exit = 0;
 
-	if((cmd = CommandSearch(input->args[0]))) {
-		/* check for built-in commands with binary search; can not run in bg */
-		return (*cmd)(input->args);
-	} else if((child = fork()) == -1) {
+		/* check for built-in commands with binary search */
+		input->result |= R_BUILTIN;
+		input->result &= ~R_BACKGROUND;
+		if((*cmd)(input->args, &exit)) input->result |= R_SUCCESS; 
+		return exit ? 0 : -1;
+	} else if((pid_child = fork()) == -1) {
 		/* messed up -- get out */
 		perror(input->args[0]);
+		input->result |= R_FORK_ERROR;
 		return 0;
-	} else if(child) {
+	} else if(pid_child) {
+		int exit_status;
+		int running;
+
 		/* this is the parent */
 		fprintf(stderr, "Parent: created child, pid %d, %sground.\n",
-				child, input->background ? "back" : "fore");
-		if(!input->background) {
-			if(!forground_child(child, exit_status_ptr)) return 0;
+				pid_child, input->result & R_BACKGROUND ? "back" : "fore");
+		if(!(input->result & R_BACKGROUND)) {
+			/* foreground */
+			if(!wait_child(pid_child, 0, &running, &exit_status)) {
+				input->result |= R_ABNORMAL;
+				return 0;
+			}
+			input->result |= (exit_status == EXIT_SUCCESS) ? R_SUCCESS : R_FAILURE;
 		} else {
-			*background_ptr = child;
+			/* background -- don't know whether it's good, but at least we
+			 could check if it's stoped immediately and not keep track;
+			 probably the programme exited already */
+			if(!wait_child(pid_child, -1, &running, &exit_status)) {
+				fprintf(stderr, "Ignoring background request.\n");
+				input->result |= R_SUCCESS;
+				return -1;
+			}
+			if(running) {
+				input->pid_child = pid_child;
+				input->result |= R_SUCCESS;
+				fprintf(stderr, "Job will be buffered.\n");
+			} else {
+				input->result |= R_ABNORMAL;
+				fprintf(stderr, "Not running.\n");
+			}
 		}
 	} else {
 		/* this is the child */
-		fprintf(stderr, "Child: exec %s.\n", simple->input.args[0]);
+		fprintf(stderr, "Child: execute %s.\n", simple->input.args[0]);
 		/* execvp does not return exept if error (horrible design) */
+		/* fixme: memcpy(in, simple->input, sizeof(struct Input));*/
 		if(execvp(simple->input.args[0], simple->input.args) == -1) {
 			perror(simple->input.args[0]);
+			input->result |= R_EXEC_ERROR;
 			return 0;
 		}
 	}
@@ -344,23 +413,32 @@ static int execute_input(struct Input *input, int *background_ptr, int *exit_sta
 
 /** waits for the process to terminate on the child
  @param pid_child          the pid of the process
- @param exit_condition_ptr if success, what the exit condition was
+ @param running_ptr        if success, whether running
+ @param exit_condition_ptr if not running, what the exit condition was
  @return                   non-zero on success */
-static int forground_child(const int pid_child, int *exit_condition_ptr) {
+static int wait_child(const int pid_child, const int bg, int *running_ptr, int *exit_condition_ptr) {
 	int status;
 	int wait;
 
-	if((wait = waitpid(pid_child, &status, 0)) == -1) {
+	if((wait = waitpid(pid_child, &status, bg ? WNOHANG : 0)) == -1) {
 		perror("waitpid");
 		return 0;
 	}
+
+	*running_ptr = -1;
+
+	/* pluging along in the background */
+	if(bg && !status) return -1;
+
+	*running_ptr = 0;
+
 	/* fixme: it's a bit more complicated then this */
 	if(!WIFEXITED(status)) {
-		fprintf(stderr, "Parent: abnormal exit from %d.\n", pid_child);
+		fprintf(stderr, "Parent: exit %d with no exit status.\n", pid_child);
 		return 0;
 	}
 	*exit_condition_ptr = WEXITSTATUS(status);
-	fprintf(stderr, "Parent: %d child exited %d.\n", pid_child, *exit_condition_ptr);
+	fprintf(stderr, "Parent: exit %d with status %d.\n", pid_child, *exit_condition_ptr);
 
 	return -1;
 }
@@ -375,9 +453,10 @@ static void check_background_processes(struct Simple *s) {
 
 	for(i = 0; i < s->noChild; i++) {
 		pid_child = s->pidChild[i];
-		fprintf(stderr, "Check background %d.\n", pid_child);
+		fprintf(stderr, "Check background pid %d.\n", pid_child);
 		if((wait = waitpid(pid_child, &status, WNOHANG)) == -1) {
 			perror("waitpid");
+			continue;
 		}
 		/* I'm scetchy on this one; I think something on the internet says if
 		 waitpid with WNOHANG detects nothing, this will always be zero */
@@ -388,7 +467,7 @@ static void check_background_processes(struct Simple *s) {
 
 			fprintf(stderr, "Background process %d exited with status %d.\n", pid_child, exit_status);
 		} else {
-			fprintf(stderr, "Background process %d exited abnormally.\n", pid_child);
+			fprintf(stderr, "Background process %d exited with no exit status.\n", pid_child);
 		}
 		/* remove it from the list; apparently it exited */
 		max = s->noChild - 1;
@@ -421,6 +500,19 @@ static void make_history(struct Simple *s) {
 	for(i = 0; i < input_args; i++) {
 		if(replace->args[i]) replace->args[i] += delta;
 	}
+	fprintf(stderr, "history: %s -> %s\n", s->input.args[0], replace->args[0]);
+}
+
+/** prints history debug aaarrrrggh */
+static void phist(void) {
+	int i;
+
+	if(!simple) return;
+	printf("phist: ");
+	for(i = 0; i < history_size; i++) {
+		if(simple->history[i].no) printf("%s:", simple->history[i].args[0]);
+	}
+	printf("\n");
 }
 
 /** prints command-line help */
