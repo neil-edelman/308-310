@@ -7,6 +7,9 @@
 #include <stdlib.h> /* malloc free */
 #include <stdio.h>  /* fprintf */
 #include <string.h> /* strcmp */
+#include <sys/types.h>/* "The include file <sys/types.h> is necessary." (POSIX) */
+#include <unistd.h> /* chdir (POSIX) */
+
 #include "Simple.h"
 #include "Command.h"
 
@@ -56,8 +59,13 @@ static int cmd_comp(const void *key, const void *elem) {
 /* these are elements of builtin */
 
 static int cmd_cd(char *args[], int *exit_ptr) {
-	printf("cd!\n");
-	/* chdir() */
+	if(!args[1]) {
+		/* if I were programming a shell, I would want context . . . wait, I am */
+		system("ls -alF");
+	} else if(chdir(args[1])) {
+		perror(args[1]);
+		return 0;
+	}
 	return -1;
 }
 
@@ -84,28 +92,38 @@ static int cmd_fg(char *args[], int *exit_ptr) {
 static int cmd_history(char *args[], int *exit_ptr) {
 	if(args[1]) {
 		fprintf(stderr, "usage: history\n");
-	} else {
-		SimpleHistory();
+		return 0;
 	}
+	SimpleHistory();
+
 	return -1;
 }
 
 static int cmd_jobs(char *args[], int *exit_ptr) {
-	printf("Not implemented.\n");
+	SimpleJobs();
 	return -1;
 }
 
 static int cmd_pwd(char *args[], int *exit_ptr) {
-	printf("pwd!\n");
-	/* getcwd() */
+	char path[256];
+
+	if(args[1]) {
+		fprintf(stderr, "usage: pwd\n");
+		return 0;
+	}
+	if(!getcwd(path, sizeof(path))) {
+		perror("path");
+		return 0;
+	}
+	printf("%s\n", path);
+
 	return -1;
 }
 
-/* FIXME: AVOID GETTING INTO AN INFINITE LOOP! */
 static int cmd_redo(char *args[], int *exit_ptr) {
 	int exec;
 
-	if(args[2]) {
+	if(args[0] && args[1] && args[2]) {
 		fprintf(stderr, "usage: r [first letters] (%s?)\n", args[2]);
 		return 0;
 	} else if(!SimpleRedo(args[1], &exec)) {

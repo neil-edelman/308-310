@@ -23,6 +23,7 @@
 #include <stdlib.h> /* malloc free EXIT_SUCCESS */
 #include <stdio.h>  /* fprintf */
 #include <string.h> /* strtok memcpy */
+#include <time.h>   /* clock */
 #include <sys/types.h>/* "The include file <sys/types.h> is necessary." (POSIX) */
 #include <unistd.h> /* fork, etc (POSIX) */
 #include <sys/wait.h>/* waitpid (POSIX) */
@@ -58,19 +59,42 @@ struct Input {
 static const int input_size = sizeof((struct Input *)0)->inputBuffer / sizeof(char);
 static const int input_args = sizeof((struct Input *)0)->args / sizeof(char *);
 
+/* private */
+struct Job {
+	int pid;
+	char name[16]; /* > 16 because called on random_name() */
+};
+
 /* public */
 struct Simple {
 	struct Input input;
 	struct Input history[10];
 	int          command_no;  /* running total */
-	int          noChild;
-	int          pidChild[40];
+	int          no_jobs;
+	struct Job   job[40];
 };
-static const int max_child    = sizeof((struct Simple *)0)->pidChild / sizeof(int);
+static const int job_size     = sizeof((struct Simple *)0)->job / sizeof(struct Job);
 static const int history_size = sizeof((struct Simple *)0)->history / sizeof(struct Input);
 
 static const char *delimiters = " \t\n\f\r";
 static const char background  = '&';
+
+/* these are loosely based on orcish from Smaug1.8 */
+static const char *words[] = { /* max chars 4 */
+	"uk", "all", "uk", "ul", "um", "orc", "uruk", "ee", "ou", "eth", "om",
+	"ith", "uuk", "ath", "ohk", "uth", "um", "th", "gn", "oo", "uu", "ar",
+	"arg", "en", "yth", "ion", "um", "es", "ac", "ch", "k", "ul", "um", "ick",
+	"uk", "of", "tuk", "ove", "aah", "ome", "ask", "my", "mal", "me", "mok",
+	"to", "sek", "hi", "come", "vak", "bat", "buy", "muk", "kham", "kzam"
+};
+static const int words_size = sizeof(words) / sizeof(char *);
+static const char *suffixes[] = { /* max chars 7 */
+	"agh", "ash", "bag", "ronk", "bubhosh", "burz", "dug", "durbat", "durb",
+	"ghash", "gimbat", "gimb", "-glob", "glob", "gul", "hai", "ishi", "krimpat",
+	"krimp", "lug", "nazg", "nazgul", "olog", "shai", "sha", "sharku", "snaga",
+	"thrakat", "thrak", "gorg", "khalok", "snar", "kurta", "ness"
+};
+static const int suffixes_size = sizeof(suffixes) / sizeof(char *);
 
 /* static function prototypes */
 static int setup(struct Simple *s);
@@ -81,6 +105,7 @@ static void check_background_processes(struct Simple *s);
 static void make_history(struct Simple *s);
 static void phist(void);
 static void usage(void);
+static void random_name(char *name, const char *seed);
 
 /* authoritative, used for when we guess (but really there's only one) */
 struct Simple *simple;
@@ -107,7 +132,7 @@ struct Simple *Simple(void) {
 		s->history[i].no = 0;
 		s->history[i].result = R_INVALID;
 	}
-	s->noChild        = 0;
+	s->no_jobs        = 0;
 	fprintf(stderr, "Simple: new, cmd no %d #%p. This is %sthe authoritative copy.\n",
 			s->command_no, (void *)s, simple ? "not " : "");
 	if(!simple) simple = s;
@@ -162,6 +187,8 @@ int SimpleRedo(const char *arg, int *exec_ptr) {
 	if(!simple) return 0;
 	/* select the operation */
 	if(!arg) {
+#if 0
+		/* I was trying to be fancy, but this is stupid */
 		if((no = simple->command_no - 2) <= 0) return 0;
 		/* fixme: make an index */
 		for(i = 0; i < history_size; i++) {
@@ -169,6 +196,18 @@ int SimpleRedo(const char *arg, int *exec_ptr) {
 		}
 		if(i >= history_size) return 0;
 		selected = &simple->history[i];
+#else
+		/* select the greatest command no */
+		int greatest = -1;
+		no = 0;
+		for(i = 0; i < history_size; i++) {
+			if(simple->history[i].no <= no) continue;
+			no = simple->history[i].no;
+			greatest = i;
+		}
+		if(greatest == -1) return 0;
+		selected = &simple->history[greatest];
+#endif
 	} else {
 		int len = strlen(arg);
 		int found = -1;
@@ -204,6 +243,17 @@ int SimpleRedo(const char *arg, int *exec_ptr) {
 	return -1;
 }
 
+/** prints out jobs of the authoritative Simple (fixme: make callback, really) */
+void SimpleJobs(void) {
+	int i;
+
+	if(!simple) return;
+	printf("pid\tname\n");
+	for(i = 0; i < simple->no_jobs; i++) {
+		printf("%d\t%s\n", simple->job[i].pid, simple->job[i].name);
+	}
+}
+
 /* private */
 
 /** entry point
@@ -220,6 +270,14 @@ int main(int argc, char **argv) {
 	}
 
 	if(!(simple = Simple())) return EXIT_FAILURE;
+
+	srand(clock());
+	/*{
+		char s[16];
+
+		random_name(s, "du");
+		printf("Random: %s.\n", s);
+	}*/
 
 	for( ; ; ) { /* Program terminates normally inside setup */
 		int i;
@@ -245,11 +303,14 @@ int main(int argc, char **argv) {
 
 		/* keep track of children */
 		if(simple->input.pid_child) {
-			if(simple->noChild < max_child) {
-				simple->pidChild[simple->noChild++] = simple->input.pid_child;
-				fprintf(stderr, "Child buffer stored pid %d.\n", simple->input.pid_child);
+			if(simple->no_jobs < job_size) {
+				struct Job *j = &simple->job[simple->no_jobs++];
+
+				random_name(j->name, simple->input.args[0]);
+				j->pid = simple->input.pid_child;
+				fprintf(stderr, "Child buffer stored pid %d dubbed %s.\n", j->pid, j->name);
 			} else {
-				fprintf(stderr, "Error: hit maximum %d processes running in background; the process was forgotten!\n", max_child);
+				fprintf(stderr, "Error: hit maximum %d processes running in background; the process was forgotten!\n", job_size);
 			}
 		}
 
@@ -451,9 +512,9 @@ static void check_background_processes(struct Simple *s) {
 	int wait;
 	int pid_child;
 
-	for(i = 0; i < s->noChild; i++) {
-		pid_child = s->pidChild[i];
-		fprintf(stderr, "Check background pid %d.\n", pid_child);
+	for(i = 0; i < s->no_jobs; i++) {
+		pid_child = s->job[i].pid;
+		fprintf(stderr, "Check background pid %d, %s.\n", pid_child, s->job[i].name);
 		if((wait = waitpid(pid_child, &status, WNOHANG)) == -1) {
 			perror("waitpid");
 			continue;
@@ -470,9 +531,9 @@ static void check_background_processes(struct Simple *s) {
 			fprintf(stderr, "Background process %d exited with no exit status.\n", pid_child);
 		}
 		/* remove it from the list; apparently it exited */
-		max = s->noChild - 1;
-		if(i < max) s->pidChild[i] = s->pidChild[max];
-		s->noChild--;
+		max = s->no_jobs - 1;
+		if(i < max) memcpy(&s->job[i], &s->job[max], sizeof(struct Job));
+		s->no_jobs--;
 		i--;
 	}
 }
@@ -522,4 +583,22 @@ static void usage(void) {
 	fprintf(stderr, "%s Copyright %s Neil Edelman\n", programme, year);
 	fprintf(stderr, "This program comes with ABSOLUTELY NO WARRANTY.\n");
 	fprintf(stderr, "This is classwork for McGill, 308-310.\n\n");
+}
+
+/** coming up with random names
+ @param name the string that's going to hold it, must be at least
+             5 + 2*max(words) + max(suffixes) + 1 long (cur 16)
+ @param seed inside the name */
+static void random_name(char *name, const char *seed) {
+	int i;
+
+	printf("words %d suff %d\n", words_size, suffixes_size);
+	strncpy(name, seed, 5);
+	name[5] = '\0';
+	i = rand() % words_size;
+	strcat(name, words[i]);
+	i = rand() % words_size;
+	strcat(name, words[i]);
+	i = rand() % suffixes_size;
+	strcat(name, suffixes[i]);
 }
