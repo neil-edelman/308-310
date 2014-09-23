@@ -1,4 +1,4 @@
-/** 110121860
+/** 110121860 woo C!
  
  "A C program that provides the basic operations of a command line shell is
  supplied below. This program is composed of two functions: main() and setup().
@@ -16,6 +16,9 @@
  and args[1] is set to the string to –l. (By “string,” we mean a null-
  terminated, C-style string variable.)"
 
+ fixme: eg run pico& and input goes to simple but pico is hogging the screen;
+ ncurses is confusing
+
  @author Neil
  @version 1
  @since 2014 */
@@ -24,9 +27,12 @@
 #include <stdio.h>  /* fprintf */
 #include <string.h> /* strtok memcpy */
 #include <time.h>   /* clock */
+#include <ctype.h>  /* isdigit */
+
 #include <sys/types.h>/* "The include file <sys/types.h> is necessary." (POSIX) */
 #include <unistd.h> /* fork, etc (POSIX) */
 #include <sys/wait.h>/* waitpid (POSIX) */
+
 #include "Command.h"
 #include "Simple.h"
 
@@ -36,7 +42,7 @@ static const char *year        = "2014";
 static const int versionMajor  = 1;
 static const int versionMinor  = 0;
 
-/* private */
+/* private - fixme: split into out/in, very confusing */
 enum Result {
 	R_INVALID = 1,
 	R_BACKGROUND = 2,
@@ -62,6 +68,7 @@ static const int input_args = sizeof((struct Input *)0)->args / sizeof(char *);
 /* private */
 struct Job {
 	int pid;
+	int no;
 	char name[16]; /* > 16 because called on random_name() */
 };
 
@@ -241,10 +248,65 @@ void SimpleJobs(void) {
 }
 
 /** tries to put it in the fg
- @param arg a pid or name or null in which case it will do the last one */
-void SimpleForground(const char *arg) {
-	/* ------------------- fixme!!! ----------------- */
-	fprintf(stderr, "Simple::Forground: Check back later.\n");
+ @param arg      a pid or name or null in which case it will do the last one
+ @param exit_ptr on success, the exit status, or null
+ @return non-zero on success */
+int SimpleForground(const char *arg, int *exit_ptr) {
+	int i, last;
+	int run;
+	int pid;
+	struct Job *job, *replace;
+
+	if(!simple) return 0;
+
+	/* 1. translate the arg into a job */
+	if(!arg) {
+		int high_value = 0, high_index = -1;
+
+		/* take the most recent command */
+		/* fixme: this is troublesome because of id overflow; make more robust! */
+		/* fixme: add an index! */
+		for(i = 0; i < simple->no_jobs; i++) {
+			if(simple->job[i].no <= high_value) continue;
+			high_value = simple->job[i].no;
+			high_index = i;
+		}
+		if(high_index == -1) return 0;
+		i = high_index;
+	} else if(isdigit(arg[0])) {
+		int pid = atoi(arg);
+
+		/* attempt to match the pid */
+		if(pid < 0) return 0;
+		for(i = 0; i < simple->no_jobs; i++) {
+			if(simple->job[i].pid == pid) break;
+		}
+		if(i >= simple->no_jobs) return 0;
+	} else {
+		int len = strlen(arg);
+
+		/* or else attempt to match the name */
+		/* fixme: if the name matches more then one, S, ambiguities match
+		 essentialy random jobs within S */
+		/* fixme: index pls; I mean, meh, it's just executing once on fg, but
+		 still */
+		for(i = 0; i < simple->no_jobs; i++) {
+			if(!strncmp(simple->job[i].name, arg, len)) break;
+		}
+		if(i >= simple->no_jobs) return 0;
+	}
+	job = &simple->job[i];
+	pid = job->pid;
+	fprintf(stderr, "Matched %d %s.\n", job->pid, job->name);
+
+	/* 2. take it out of the background; assert(simple->no_jobs > 0) */
+	last = simple->no_jobs - 1;
+	replace = &simple->job[last];
+	if(i < last) memcpy(job, replace, sizeof(struct Job));
+	simple->no_jobs--;
+
+	/* 3. run it in the foreground */
+	return wait_child(pid, 0, &run, exit_ptr) && !run ? -1 : 0;
 }
 
 /* private */
@@ -306,6 +368,7 @@ int main(int argc, char **argv) {
 
 				random_name(j->name, simple->input.args[0]);
 				j->pid = simple->input.pid_child;
+				j->no  = simple->input.no;
 				fprintf(stderr, "Child buffer stored pid %d dubbed %s.\n", j->pid, j->name);
 			} else {
 				fprintf(stderr, "Error: hit maximum %d processes running in background; the process was forgotten!\n", job_size);
@@ -405,6 +468,10 @@ static void setup_redo(struct Simple *s, const struct Input *selected) {
  otherwise returns to the setup() function."
  I assume the other way around; this is overly-complex? why would you
  fork if you didn't need to run in the background? whatever
+ 
+ fixme: doesn't handle interruption! WCONTINUED, WUNTRACED, I don't know;
+ when a signal is recieved, it just exits the shell instead of the job
+
  @param input           a valid input
  @return                non-zero on success */
 static int execute_input(struct Input *input) {
@@ -463,7 +530,8 @@ static int execute_input(struct Input *input) {
 		/* this is the child */
 		fprintf(stderr, "Child: execute %s.\n", simple->input.args[0]);
 		/* execvp does not return exept if error (horrible design) */
-		/* fixme: memcpy(in, simple->input, sizeof(struct Input));*/
+		/* fixme: memcpy(in, simple->input, sizeof(struct Input));
+		 Simple_(simple) . . . ? memory leak? sigh, it's exiting anyway */
 		if(execvp(simple->input.args[0], simple->input.args) == -1) {
 			perror(simple->input.args[0]);
 			input->result |= R_EXEC_ERROR;
@@ -582,6 +650,8 @@ static void random_name(char *name, const char *seed) {
 
 	i = rand() % words_size;
 	strcpy(name, words[i]);
+	i = rand() % words_size;
+	strcat(name, words[i]);
 	strncat(name, seed, 2); /* 5 is too long */
 	/*i = rand() % words_size;
 	strcat(name, words[i]); too long */

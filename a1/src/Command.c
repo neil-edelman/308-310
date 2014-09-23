@@ -88,13 +88,21 @@ static int cmd_exit(char *args[], int *exit_ptr) {
 }
 
 static int cmd_fg(char *args[], int *exit_ptr) {
+	int exit;
+
 	if(args[1] && args[2]) {
 		fprintf(stderr, "usage: fg [pid | name]; see jobs\n");
 		return 0;
 	}
-	SimpleForground(args[1]);
+	if(!SimpleForground(args[1], &exit)) {
+		fprintf(stderr, "Could not 'fg %s.' :[\n", args[1]);
+		return 0;
+	}
+	fprintf(stderr, "The foregrounded job exited %d.\n", exit);
 
+	/* fixme: I don't know, bg exit or job exit? one of them will be lost */
 	return -1;
+	/*return exit == EXIT_SUCCESS ? -1 : 0; <- semantics, yea */
 }
 
 static int cmd_history(char *args[], int *exit_ptr) {
