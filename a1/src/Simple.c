@@ -103,7 +103,6 @@ static int execute_input(struct Input *input);
 static int wait_child(const int pid_child, const int bg, int *running_ptr, int *exit_condition_ptr);
 static void check_background_processes(struct Simple *s);
 static void make_history(struct Simple *s);
-static void phist(void);
 static void usage(void);
 static void random_name(char *name, const char *seed);
 
@@ -187,16 +186,6 @@ int SimpleRedo(const char *arg, int *exec_ptr) {
 	if(!simple) return 0;
 	/* select the operation */
 	if(!arg) {
-#if 0
-		/* I was trying to be fancy, but this is stupid */
-		if((no = simple->command_no - 2) <= 0) return 0;
-		/* fixme: make an index */
-		for(i = 0; i < history_size; i++) {
-			if(no == simple->history[i].no) break;
-		}
-		if(i >= history_size) return 0;
-		selected = &simple->history[i];
-#else
 		/* select the greatest command no */
 		int greatest = -1;
 		no = 0;
@@ -207,7 +196,6 @@ int SimpleRedo(const char *arg, int *exec_ptr) {
 		}
 		if(greatest == -1) return 0;
 		selected = &simple->history[greatest];
-#endif
 	} else {
 		int len = strlen(arg);
 		int found = -1;
@@ -238,8 +226,6 @@ int SimpleRedo(const char *arg, int *exec_ptr) {
 	exec = execute_input(&simple->input);
 	if(exec_ptr) *exec_ptr = exec;
 
-	phist();
-
 	return -1;
 }
 
@@ -254,6 +240,13 @@ void SimpleJobs(void) {
 	}
 }
 
+/** tries to put it in the fg
+ @param arg a pid or name or null in which case it will do the last one */
+void SimpleForground(const char *arg) {
+	/* ------------------- fixme!!! ----------------- */
+	fprintf(stderr, "Simple::Forground: Check back later.\n");
+}
+
 /* private */
 
 /** entry point
@@ -261,6 +254,7 @@ void SimpleJobs(void) {
  @param argv the arguments
  @return     either EXIT_SUCCESS or EXIT_FAILURE */
 int main(int argc, char **argv) {
+	int exit;
 	struct Simple *simple;
 
 	/* no command line switches */
@@ -271,19 +265,23 @@ int main(int argc, char **argv) {
 
 	if(!(simple = Simple())) return EXIT_FAILURE;
 
+	/* so we have different random names */
 	srand(clock());
-	/*{
-		char s[16];
-
-		random_name(s, "du");
-		printf("Random: %s.\n", s);
-	}*/
 
 	for( ; ; ) { /* Program terminates normally inside setup */
 		int i;
 
-		phist();
-		printf(" COMMAND->\n");
+		/** prints history debug aaarrrrggh */
+		{
+			int i;
+
+			printf("history: ");
+			for(i = 0; i < history_size; i++) {
+				if(simple->history[i].no) printf("%s:", simple->history[i].args[0]);
+			}
+			printf("\n");
+		}
+		printf(";}-> ");
 
 		/* get next command */
 		if(!setup(simple)) break;
@@ -299,7 +297,7 @@ int main(int argc, char **argv) {
 		for(i = 0; simple->input.args[i]; i++) fprintf(stderr, "args[%d] <%s>\n", i, simple->input.args[i]);
 
 		/* execute! */
-		if(!execute_input(&simple->input)) return EXIT_FAILURE;
+		if(!execute_input(&simple->input)) break;
 
 		/* keep track of children */
 		if(simple->input.pid_child) {
@@ -317,17 +315,20 @@ int main(int argc, char **argv) {
 		/* add history */
 		if((simple->input.result & R_SUCCESS)) make_history(simple);
 
-		phist();
 	}
+
+	/* specifically, R_SUCCESS is set by "exit" */
+	exit = (simple->input.result & R_SUCCESS) ? EXIT_SUCCESS : EXIT_FAILURE;
 
 	Simple_(&simple);
 
-	return EXIT_SUCCESS;
+	return exit;
 }
 
-/** setup() reads in the next command line, separating it into distinct tokens
+/** "setup() reads in the next command line, separating it into distinct tokens
  * using whitespace as delimiters. setup() sets the args parameter as a
- * null-terminated string.
+ * null-terminated string."
+ resets the input on a Simple and reads stdin into it
  @param s a valid Simple
  @return non-zero on success */
 static int setup(struct Simple *s) {
@@ -561,19 +562,6 @@ static void make_history(struct Simple *s) {
 	for(i = 0; i < input_args; i++) {
 		if(replace->args[i]) replace->args[i] += delta;
 	}
-	fprintf(stderr, "history: %s -> %s\n", s->input.args[0], replace->args[0]);
-}
-
-/** prints history debug aaarrrrggh */
-static void phist(void) {
-	int i;
-
-	if(!simple) return;
-	printf("phist: ");
-	for(i = 0; i < history_size; i++) {
-		if(simple->history[i].no) printf("%s:", simple->history[i].args[0]);
-	}
-	printf("\n");
 }
 
 /** prints command-line help */
@@ -585,20 +573,18 @@ static void usage(void) {
 	fprintf(stderr, "This is classwork for McGill, 308-310.\n\n");
 }
 
-/** coming up with random names
+/** come up with random names
  @param name the string that's going to hold it, must be at least
              5 + 2*max(words) + max(suffixes) + 1 long (cur 16)
  @param seed inside the name */
 static void random_name(char *name, const char *seed) {
 	int i;
 
-	printf("words %d suff %d\n", words_size, suffixes_size);
-	strncpy(name, seed, 5);
-	name[5] = '\0';
 	i = rand() % words_size;
-	strcat(name, words[i]);
-	i = rand() % words_size;
-	strcat(name, words[i]);
+	strcpy(name, words[i]);
+	strncat(name, seed, 2); /* 5 is too long */
+	/*i = rand() % words_size;
+	strcat(name, words[i]); too long */
 	i = rand() % suffixes_size;
 	strcat(name, suffixes[i]);
 }

@@ -20,6 +20,7 @@ static int cmd_exit(char *args[], int *);
 static int cmd_fg(char *args[], int *);
 static int cmd_history(char *args[], int *);
 static int cmd_jobs(char *args[], int *);
+static int cmd_kill(char *args[], int *);
 static int cmd_pwd(char *args[], int *);
 static int cmd_redo(char *args[], int *);
 
@@ -34,6 +35,7 @@ static const struct Command {
 	{ "fg",     &cmd_fg },
 	{ "history",&cmd_history },
 	{ "jobs",   &cmd_jobs },
+	{ "kill",   &cmd_kill },
 	{ "pwd",    &cmd_pwd },
 	{ "r",      &cmd_redo }
 };
@@ -86,6 +88,12 @@ static int cmd_exit(char *args[], int *exit_ptr) {
 }
 
 static int cmd_fg(char *args[], int *exit_ptr) {
+	if(args[1] && args[2]) {
+		fprintf(stderr, "usage: fg [pid | name]; see jobs\n");
+		return 0;
+	}
+	SimpleForground(args[1]);
+
 	return -1;
 }
 
@@ -102,6 +110,11 @@ static int cmd_history(char *args[], int *exit_ptr) {
 static int cmd_jobs(char *args[], int *exit_ptr) {
 	SimpleJobs();
 	return -1;
+}
+
+static int cmd_kill(char *args[], int *exit_ptr) {
+	fprintf(stderr, "Not implemented. :[\n");
+	return 0;
 }
 
 static int cmd_pwd(char *args[], int *exit_ptr) {
@@ -123,7 +136,7 @@ static int cmd_pwd(char *args[], int *exit_ptr) {
 static int cmd_redo(char *args[], int *exit_ptr) {
 	int exec;
 
-	if(args[0] && args[1] && args[2]) {
+	if(args[1] && args[2]) {
 		fprintf(stderr, "usage: r [first letters] (%s?)\n", args[2]);
 		return 0;
 	} else if(!SimpleRedo(args[1], &exec)) {
