@@ -29,20 +29,21 @@
 #include <time.h>   /* clock */
 #include <ctype.h>  /* isdigit */
 
-#include <sys/types.h>/* "The include file <sys/types.h> is necessary." (POSIX) */
-#include <unistd.h> /* fork, etc (POSIX) */
-#include <sys/wait.h>/* waitpid (POSIX) */
+#include <sys/types.h> /* "The include file <sys/types.h> is necessary." (POSIX) */
+#include <unistd.h>    /* fork, etc (POSIX) */
+#include <sys/wait.h>  /* waitpid (POSIX) */
 
 #include "Command.h"
 #include "Simple.h"
 
 /* constants */
-static const char *programme   = "A1";
+static const char *programme   = "Simple";
 static const char *year        = "2014";
 static const int versionMajor  = 1;
 static const int versionMinor  = 0;
 
-/* private - fixme: split into out/in, very confusing */
+/* private - fixme: split into out/in? very confusing . . .
+ not a clear deliniation */
 enum Result {
 	R_INVALID = 1,
 	R_BACKGROUND = 2,
@@ -69,7 +70,7 @@ static const int input_args = sizeof((struct Input *)0)->args / sizeof(char *);
 struct Job {
 	int pid;
 	int no;
-	char name[16]; /* > 16 because called on random_name() */
+	char name[16]; /* >= 16 because called on random_name() */
 };
 
 /* public */
@@ -139,8 +140,10 @@ struct Simple *Simple(void) {
 		s->history[i].result = R_INVALID;
 	}
 	s->no_jobs        = 0;
+#ifdef DEBUG
 	fprintf(stderr, "Simple: new, cmd no %d #%p. This is %sthe authoritative copy.\n",
 			s->command_no, (void *)s, simple ? "not " : "");
+#endif
 	if(!simple) simple = s;
 
 	return s;
@@ -151,7 +154,9 @@ void Simple_(struct Simple **s_ptr) {
 	struct Simple *s;
 	
 	if(!s_ptr || !(s = *s_ptr)) return;
+#ifdef DEBUG
 	fprintf(stderr, "~Simple: erase, #%p.\n", (void *)s);
+#endif
 	if(s == simple) simple = 0;
 	free(s);
 	*s_ptr = s = 0;
@@ -187,10 +192,12 @@ void SimpleHistory(void) {
  @param exec_ptr if it gets to this, whatever execute_input returned
  @return         non-zero on success */
 int SimpleRedo(const char *arg, int *exec_ptr) {
+	int first;
 	int i, no, exec;
 	struct Input *selected;
 
 	if(!simple) return 0;
+
 	/* select the operation */
 	if(!arg) {
 		/* select the greatest command no */
@@ -226,10 +233,19 @@ int SimpleRedo(const char *arg, int *exec_ptr) {
 		}
 		selected = &simple->history[found];
 	}
-	fprintf(stderr, "Redo: %s\n", selected->args[0]);
 
+	/* "Any command that is executed in this fashion (redo) should be echoed on
+	 the user's screen and the command is also placed in the history buffer as
+	 the next command." */
+	fprintf(stderr, "Redo: ");
+	for(i = 0, first = -1; selected->args[i]; i++) {
+		fprintf(stderr, "%s%s", first ? "" : " ", selected->args[i]);
+		first = 0;
+	}
+	fprintf(stderr, "\n");
+
+	/* do it */
 	setup_redo(simple, selected);
-
 	exec = execute_input(&simple->input);
 	if(exec_ptr) *exec_ptr = exec;
 
@@ -297,7 +313,9 @@ int SimpleForground(const char *arg, int *exit_ptr) {
 	}
 	job = &simple->job[i];
 	pid = job->pid;
+#ifdef DEBUG
 	fprintf(stderr, "Matched %d %s.\n", job->pid, job->name);
+#endif
 
 	/* 2. take it out of the background; assert(simple->no_jobs > 0) */
 	last = simple->no_jobs - 1;
@@ -331,19 +349,18 @@ int main(int argc, char **argv) {
 	srand(clock());
 
 	for( ; ; ) { /* Program terminates normally inside setup */
+
+#ifdef DEBUG
 		int i;
 
-		/** prints history debug aaarrrrggh */
-		{
-			int i;
-
-			printf("history: ");
-			for(i = 0; i < history_size; i++) {
-				if(simple->history[i].no) printf("%s:", simple->history[i].args[0]);
-			}
-			printf("\n");
+		printf("history: ");
+		for(i = 0; i < history_size; i++) {
+			if(simple->history[i].no) printf("%s:", simple->history[i].args[0]);
 		}
-		printf(";}-> ");
+		printf("\n");
+#endif
+
+		printf("Command ;}->\n");
 
 		/* get next command */
 		if(!setup(simple)) break;
@@ -355,8 +372,9 @@ int main(int argc, char **argv) {
 		/* if it's a blank line */
 		if(!simple->input.args[0]) continue;
 
-		/* debug */
+#ifdef DEBUG
 		for(i = 0; simple->input.args[i]; i++) fprintf(stderr, "args[%d] <%s>\n", i, simple->input.args[i]);
+#endif
 
 		/* execute! */
 		if(!execute_input(&simple->input)) break;
@@ -369,8 +387,9 @@ int main(int argc, char **argv) {
 				random_name(j->name, simple->input.args[0]);
 				j->pid = simple->input.pid_child;
 				j->no  = simple->input.no;
-				fprintf(stderr, "Child buffer stored pid %d dubbed %s.\n", j->pid, j->name);
+				fprintf(stderr, "New child %s pid %d.\n", j->name, j->pid);
 			} else {
+				/* fixme obv */
 				fprintf(stderr, "Error: hit maximum %d processes running in background; the process was forgotten!\n", job_size);
 			}
 		}
@@ -379,6 +398,7 @@ int main(int argc, char **argv) {
 		if((simple->input.result & R_SUCCESS)) make_history(simple);
 
 	}
+	fprintf(stderr, "\n");
 
 	/* specifically, R_SUCCESS is set by "exit" */
 	exit = (simple->input.result & R_SUCCESS) ? EXIT_SUCCESS : EXIT_FAILURE;
@@ -499,8 +519,10 @@ static int execute_input(struct Input *input) {
 		int running;
 
 		/* this is the parent */
+#ifdef DEBUG
 		fprintf(stderr, "Parent: created child, pid %d, %sground.\n",
 				pid_child, input->result & R_BACKGROUND ? "back" : "fore");
+#endif
 		if(!(input->result & R_BACKGROUND)) {
 			/* foreground */
 			if(!wait_child(pid_child, 0, &running, &exit_status)) {
@@ -520,7 +542,9 @@ static int execute_input(struct Input *input) {
 			if(running) {
 				input->pid_child = pid_child;
 				input->result |= R_SUCCESS;
+#ifdef DEBUG
 				fprintf(stderr, "Job will be buffered.\n");
+#endif
 			} else {
 				input->result |= R_ABNORMAL;
 				fprintf(stderr, "Not running.\n");
@@ -528,7 +552,9 @@ static int execute_input(struct Input *input) {
 		}
 	} else {
 		/* this is the child */
+#ifdef DEBUG
 		fprintf(stderr, "Child: execute %s.\n", simple->input.args[0]);
+#endif
 		/* execvp does not return exept if error (horrible design) */
 		/* fixme: memcpy(in, simple->input, sizeof(struct Input));
 		 Simple_(simple) . . . ? memory leak? sigh, it's exiting anyway */
@@ -568,7 +594,9 @@ static int wait_child(const int pid_child, const int bg, int *running_ptr, int *
 		return 0;
 	}
 	*exit_condition_ptr = WEXITSTATUS(status);
+#ifdef DEBUG
 	fprintf(stderr, "Parent: exit %d with status %d.\n", pid_child, *exit_condition_ptr);
+#endif
 
 	return -1;
 }
@@ -580,10 +608,14 @@ static void check_background_processes(struct Simple *s) {
 	int status;
 	int wait;
 	int pid_child;
+	char *name;
 
 	for(i = 0; i < s->no_jobs; i++) {
 		pid_child = s->job[i].pid;
+		name      = s->job[i].name;
+#ifdef DEBUG
 		fprintf(stderr, "Check background pid %d, %s.\n", pid_child, s->job[i].name);
+#endif
 		if((wait = waitpid(pid_child, &status, WNOHANG)) == -1) {
 			perror("waitpid");
 			continue;
@@ -595,9 +627,9 @@ static void check_background_processes(struct Simple *s) {
 		if(WIFEXITED(status)) {
 			int exit_status = WEXITSTATUS(status);
 
-			fprintf(stderr, "Background process %d exited with status %d.\n", pid_child, exit_status);
+			fprintf(stderr, "Background process %s (pid %d) exited with status %d.\n", name, pid_child, exit_status);
 		} else {
-			fprintf(stderr, "Background process %d exited with no exit status.\n", pid_child);
+			fprintf(stderr, "Background process %s (pid %d) exited with no exit status.\n", name, pid_child);
 		}
 		/* remove it from the list; apparently it exited */
 		max = s->no_jobs - 1;
@@ -648,6 +680,8 @@ static void usage(void) {
 static void random_name(char *name, const char *seed) {
 	int i;
 
+	/* fixme: there's no gauratee that these are unique, but it doesn't really
+	 matter */
 	i = rand() % words_size;
 	strcpy(name, words[i]);
 	i = rand() % words_size;

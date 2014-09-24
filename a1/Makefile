@@ -1,6 +1,6 @@
 # Makefile 1.1 (GNU Make 3.81; MacOSX gcc 4.2.1; MacOSX MinGW 4.3.0)
 
-PROJ  := A1
+PROJ  := Simple
 VA    := 1
 VB    := 0
 FILES := Simple Command
