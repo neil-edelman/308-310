@@ -33,9 +33,9 @@ struct Job *Job(struct Client *c, int pages) {
 		Job_(&job);
 		return 0;
 	}
-	job->client = c;
-	job->pages  = pages;
-	job->done   = 0;
+	job->client    = c;
+	job->pages     = pages;
+	job->done      = 0;
 	fprintf(stderr, "Job: new, %d pages for %s #%p.\n", pages, ClientGetName(c), (void *)job);
 
 	return job;
@@ -47,8 +47,7 @@ void Job_(struct Job **job_ptr) {
 	struct Job *job;
 
 	if(!job_ptr || !(job = *job_ptr)) return;
-	if(job->done < job->pages) fprintf(stderr, "Cancelling print job for %s; done %d / %d.\n", ClientGetName(job->client), job->done, job->pages);
-	fprintf(stderr, "~Job: erase, #%p.\n", (void *)job);
+	fprintf(stderr, "~Job: erase, print job for %s, done %d / %d, #%p.\n", ClientGetName(job->client), job->done, job->pages, (void *)job);
 	free(job);
 	*job_ptr = job = 0;
 }

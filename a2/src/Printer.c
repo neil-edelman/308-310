@@ -15,6 +15,8 @@
 #include "Printer.h"
 
 struct Printer {
+	pthread_t thread;
+	int is_running;
 	int id;
 	int ms_per_page;
 };
@@ -42,6 +44,7 @@ struct Printer *Printer(const int ms_per_page) {
 		Printer_(&printer);
 		return 0;
 	}
+	printer->is_running  = 0;
 	printer->id          = unique++;
 	printer->ms_per_page = ms_per_page;
 	fprintf(stderr, "Printer: new, %d with %fs/page #%p.\n",
@@ -58,7 +61,15 @@ void Printer_(struct Printer **printer_ptr) {
 	struct Printer *printer;
 
 	if(!printer_ptr || !(printer = *printer_ptr)) return;
-	fprintf(stderr, "~Printer: erase, %d #%p.\n", printer->id, (void *)printer);
+	if(printer->is_running) {
+		void *value;
+
+		pthread_join(printer->thread, &value);
+		printer->is_running = 0;
+		fprintf(stderr, "~Printer: %d thread return #%p, erase #%p.\n", printer->id, value, (void *)printer);
+	} else {
+		fprintf(stderr, "~Client: %d (not running) erase #%p.\n", printer->id, (void *)printer);
+	}
 	free(printer);
 	*printer_ptr = printer = 0;
 }
@@ -78,8 +89,18 @@ void PrinterPrintJob(const struct Printer *printer, struct Job *job, const int b
 			buffer);
 }
 
+/** run the printer
+ @return non-zero on success */
+int PrinterRun(struct Printer *p) {
+	if(!p || p->is_running) return 0;
+	pthread_create(&p->thread, 0, (void *(*)(void *))&thread, p);
+	p->is_running = -1;
+	return -1;
+}
+
 /* private */
 
 static void *thread(struct Printer *p) {
+	/*sleep();*/
 	return 0;
 }

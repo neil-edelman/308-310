@@ -14,7 +14,7 @@ H     := $(patsubst %,$(SDIR)/%.h,$(FILES))
 
 CC   := gcc # /usr/local/i386-mingw32-4.3.0/bin/i386-mingw32-gcc javac nxjc
 CF   := -Wall -O3 -fasm -fomit-frame-pointer -ffast-math -funroll-loops -pedantic -ansi # or -std=c99 -mwindows or -g:none -O -verbose -d $(BDIR) $(SDIR)/*.java -Xlint:unchecked -Xlint:deprecation
-OF   := # -framework OpenGL -framework GLUT
+OF   := -pthread # -framework OpenGL -framework GLUT
 
 default: $(BDIR)/$(PROJ)
 #	cp $(SDIR)/$(ICON) $(BDIR)/$(ICON)

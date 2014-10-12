@@ -14,6 +14,7 @@
 #include <unistd.h> /* sleep */
 #include <pthread.h>
 
+#include "Spool.h"
 #include "Job.h"
 #include "Client.h"
 
@@ -64,10 +65,6 @@ static void random_name(char *name);
 struct Client *Client(void) {
 	struct Client *client;
 
-	/*if(ms_idle <= 500 || pages_min < 1 || pages_max < pages_min) {
-		fprintf(stderr, "Client: invalid parameters.\n");
-		return 0;
-	}*/
 	if(!(client = malloc(sizeof(struct Client)))) {
 		perror("Client constructor");
 		Client_(&client);
@@ -78,7 +75,7 @@ struct Client *Client(void) {
 	client->ms_idle   = time_between_prints;
 	client->pages_min = min_page;
 	client->pages_max = max_page;
-	client->prints    = 1; /* the client is only sending one print job */
+	client->prints    = 1; /* the client is only sending one print job, ala example */
 	random_name(client->name);
 	fprintf(stderr, "Client: new, %s (%d) #%p.\n", client->name, client->id, (void *)client);
 
@@ -89,10 +86,11 @@ struct Client *Client(void) {
  @param client_ptr a reference to the object that is to be deleted */
 void Client_(struct Client **client_ptr) {
 	struct Client *client;
-	void *value;
 
 	if(!client_ptr || !(client = *client_ptr)) return;
 	if(client->is_running) {
+		void *value;
+
 		pthread_join(client->thread, &value);
 		client->is_running = 0;
 		fprintf(stderr, "~Client: %s thread return #%p, erase #%p.\n", client->name, value, (void *)client);
@@ -126,7 +124,10 @@ static void *thread(struct Client *client) {
 	if(!client) return 0;
 	for( ; client->prints; client->prints--) {
 		job = Job(client, random_int(client->pages_min, client->pages_max));
-		fprintf(stderr, "%s has %d pages to print\n", client->name, JobGetPages(job));
+		/*fprintf(stderr, "%s has %d pages to print\n", client->name, JobGetPages(job));*/
+		if(!SpoolJob(job)) {
+			printf("something");
+		}
 		/*sleep(client->ms_idle);*/
 		Job_(&job);
 	}
