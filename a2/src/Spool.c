@@ -28,7 +28,7 @@ static const int versionMinor  = 0;
 struct Spool {
 	struct Job **job;
 	int jobs_size;
-	int head, tail;
+	int head, tail, empty;
 	struct Printer **printer;
 	int printers_size;
 	struct Client **client;
@@ -39,9 +39,9 @@ struct Spool {
 static const int ms_per_page  = 1000;
 /* 644 */
 static const int permission   = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
-static const char *mutex_name = "/printersim-mutex";
-static const char *empty_name = "/printersim-empty";
-static const char *full_name  = "/printersim-full";
+static const char *mutex_name = "/PrinterSimulation-mutex";
+static const char *empty_name = "/PrinterSimulation-empty";
+static const char *full_name  = "/PrinterSimulation-full";
 
 /* globals are initailased */
 
@@ -96,6 +96,7 @@ int main(int argc, char **argv) {
 
 	/* initaialise the semaphores */
 	if(!semaphores()) return EXIT_FAILURE;
+	atexit(&semaphores_);
 
 	/* print stuff with multiple threads */
 	if(!(the_spool = Spool(jobs, printers, clients))) return EXIT_FAILURE;
@@ -104,7 +105,7 @@ int main(int argc, char **argv) {
 	Spool_(&the_spool);
 
 	/* destroy the semaphores */
-	semaphores_();
+	/*semaphores_();*/
 
 	return EXIT_SUCCESS;
 }
@@ -117,10 +118,6 @@ struct Spool *Spool(const int jobs_size, const int printers_size, const int clie
 	struct Spool *s;
 	int i;
 
-	/*if(the_spool) {
-		fprintf(stderr, "Spool: idempotent.\n");
-		return 0;
-	}*/
 	if(jobs_size < 1 || printers_size < 1 || clients_size < 1) {
 		fprintf(stderr, "Spool: invalid parameters.\n");
 		return 0;
@@ -136,6 +133,7 @@ struct Spool *Spool(const int jobs_size, const int printers_size, const int clie
 	s->job           = (struct Job **)(s + 1);
 	s->jobs_size     = jobs_size;
 	s->head = s->tail = 0;
+	s->empty = -1;
 	s->printer       = (struct Printer **)&s->job[jobs_size];
 	s->printers_size = printers_size;
 	s->client        = (struct Client **)&s->printer[printers_size];
@@ -162,7 +160,7 @@ void Spool_(struct Spool **s_ptr) {
 
 	if(!s_ptr || !(s = *s_ptr)) return;
 	for(i = 0; i < s->jobs_size;     i++) Job_(&s->job[i]);
-	for(i = 0; i < s->printers_size; i++) Printer_(&s->printer[i]);
+	for(i = 0; i < s->printers_size; i++) { sem_post(full); Printer_(&s->printer[i]); }
 	for(i = 0; i < s->clients_size;  i++) Client_(&s->client[i]);
 	fprintf(stderr, "~Spool: erase, #%p.\n", (void *)s);
 	free(s);
@@ -172,24 +170,54 @@ void Spool_(struct Spool **s_ptr) {
 /** attempts to spool the job to the printing queue in the_spool
  @param job
  @return non-zero on success */
-int SpoolJob(const struct Job *job) {
-	int new_head;
+int SpoolPushJob(/*const */struct Job *job) {
+	int ret;
 
 	if(!the_spool || !job || JobGetPages(job) <= 0) return 0;
-	new_head = (the_spool->head + 1) % the_spool->jobs_size;
+
 	printf("%s has %d pages to print, ",
 		   ClientGetName(JobGetClient(job)),
 		   JobGetPages(job));
-	if(new_head == the_spool->tail) {
-		/* spool is full */
-		printf("buffer full, sleeps (not really)\n");
-		return 0;
-	}
-	the_spool->head = new_head;
-	the_spool->job[the_spool->head] = (struct Job *)job;
-	printf("puts request in Buffer[%d]\n", the_spool->head);
 
-	return -1;
+	/* critical section */
+	sem_wait(mutex);
+	if(!the_spool->empty && the_spool->head == the_spool->tail) {
+		ret = 0;
+	} else {
+		the_spool->empty = 0;
+		JobSetBuffer(job, the_spool->head);
+		the_spool->job[the_spool->head] = (struct Job *)job;
+		the_spool->head = (the_spool->head + 1) % the_spool->jobs_size;
+		ret = -1;
+	}
+	sem_post(mutex);
+
+	/* spool is full */
+	if(!ret) {
+		printf("buffer full, sleeps\n");
+	} else {
+		printf("puts request in Buffer[%d] [%d,%d]\n", the_spool->head, the_spool->tail, the_spool->head);
+	}
+
+	return ret;
+}
+
+/** attempts to pop a job from the queue
+ @return job or null if there is no job */
+struct Job *SpoolPopJob(void) {
+	struct Job *job = 0;
+
+	if(!the_spool) return 0;
+
+	sem_wait(mutex);
+	if(!the_spool->empty) {
+		job = the_spool->job[the_spool->tail];
+		the_spool->tail = (the_spool->tail + 1) % the_spool->jobs_size;
+		if(the_spool->tail == the_spool->head) the_spool->empty = -1;
+	}
+	sem_post(mutex);
+
+	return job;
 }
 
 /* private */
@@ -206,19 +234,27 @@ static int semaphores(void) {
 	}
 	s->is_mutex = -1; ... */	
 	/*sem_t *sem = sem_open(name, 0);*/
+	fprintf(stderr, "Spool::semaphores: opening.\n");
+	/* just in case a mutex_name semaphore already existed; the probable cause
+	 is that the programme was terminated the last time without cleaning the
+	 semaphores (I looked it up . . . posix semaphores are all but useless;)
+	 hack to try and clean up now */
+	if(sem_unlink(mutex_name) == -1);
 	if((mutex = sem_open(mutex_name, O_CREAT | O_EXCL, permission, 1)) == SEM_FAILED) {
 		perror("mutex");
 		mutex = 0;
 		semaphores_();
 		return 0;
 	}
-	if((empty = sem_open(empty_name, O_CREAT | O_EXCL, permission, 1)) == SEM_FAILED) {
+	if(sem_unlink(empty_name) == -1);
+	if((empty = sem_open(empty_name, O_CREAT | O_EXCL, permission, 0)) == SEM_FAILED) {
 		perror("empty");
 		empty = 0;
 		semaphores_();
 		return 0;
 	}
-	if((full  = sem_open(full_name, O_CREAT | O_EXCL, permission, 1)) == SEM_FAILED) {
+	if(sem_unlink(full_name)  == -1);
+	if((full  = sem_open(full_name, O_CREAT | O_EXCL, permission, 0)) == SEM_FAILED) {
 		perror("full");
 		full  = 0;
 		semaphores_();
@@ -234,6 +270,8 @@ static void semaphores_(void) {
 	/*if(s->is_mutex) { sem_destroy(&s->mutex); s->is_mutex = 0; }
 	 if(s->is_empty) { sem_destroy(&s->empty); s->is_empty = 0; }
 	 if(s->is_full)  { sem_destroy(&s->full);  s->is_full = 0; }*/
+	/* we're exiting, we have to just put up with errors I suppose */
+	fprintf(stderr, "Spool::~semaphores: closing.\n");
 	if(mutex) {
 		if(sem_close(mutex) == -1) perror("mutex");
 		mutex = 0;

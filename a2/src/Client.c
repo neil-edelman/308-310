@@ -30,7 +30,7 @@ struct Client {
 	int prints;
 };
 
-extern sem_t mutex, empty, full;
+extern sem_t *mutex, *empty, *full;
 
 static const int min_page = 1;
 static const int max_page = 10;
@@ -128,12 +128,17 @@ static void *thread(struct Client *client) {
 	for( ; client->prints; client->prints--) {
 		job = Job(client, random_int(client->pages_min, client->pages_max));
 		/*fprintf(stderr, "%s has %d pages to print\n", client->name, JobGetPages(job));*/
-		if(!SpoolJob(job)) {
-			/*wait();*/
-			printf("something");
+		if(!SpoolPushJob(job)) {
+			printf("%s: couldn't push job; full spool.\n", client->name);
+			Job_(&job);
+			/*wait(empty);*/
 		}
+		/*sem_wait(empty);
+		sem_wait(mutex);
+		sem_post(mutex);
+		sem_post(full);*/
 		/*sleep(client->ms_idle);*/
-		Job_(&job);
+		/*Job_(&job); <- handed over control to Spool */
 	}
 	fprintf(stderr, "%s signing off.\n", client->name);
 	return 0;

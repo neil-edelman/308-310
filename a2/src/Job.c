@@ -15,6 +15,7 @@ struct Job {
 	struct Client *client;
 	int pages;
 	int done;
+	int buffer_no; /* purely cosmetic */
 };
 
 /* public */
@@ -36,6 +37,7 @@ struct Job *Job(struct Client *c, int pages) {
 	job->client    = c;
 	job->pages     = pages;
 	job->done      = 0;
+	job->buffer_no = -1;
 	fprintf(stderr, "Job: new, %d pages for %s #%p.\n", pages, ClientGetName(c), (void *)job);
 
 	return job;
@@ -58,10 +60,20 @@ int JobGetPages(const struct Job *j) { return j ? j->pages - j->done : 0; }
 /** @return client */
 struct Client *JobGetClient(const struct Job *j) { return j ? j->client : 0; }
 
+/** set buffer
+ @param buffer buffer */
+void JobSetBuffer(struct Job *j, const int buffer) {
+	if(!j) return;
+	j->buffer_no = buffer;
+}
+
+/** @return buffer */
+int JobGetBuffer(const struct Job *j) { return j ? j->buffer_no : 0; }
+
 /**
  @param job
  @param printed the number of printed pages to augment */
-void JobPrintPages(struct Job *job, int printed) {
+void JobPrintPages(struct Job *job, const int printed) {
 	if(!job || printed <= 0) return;
 	if(job->pages - job->done > printed) {
 		fprintf(stderr, "Job: %s printed more pages then in the print job?\n", ClientGetName(job->client));

@@ -13,16 +13,18 @@
 #include <semaphore.h>
 
 #include "Job.h"
+#include "Client.h"
+#include "Spool.h"
 #include "Printer.h"
 
 struct Printer {
 	pthread_t thread;
 	int is_running;
 	int id;
-	int ms_per_page;
+	int ms_per_page; /* not used */
 };
 
-extern sem_t mutex, empty, full;
+extern sem_t *mutex, *empty, *full;
 
 static void *thread(struct Printer *p);
 
@@ -84,26 +86,57 @@ int PrinterGetId(const struct Printer *p) { return p ? p->id : 0; }
  @param printer
  @param job
  @param buffer */
-void PrinterPrintJob(const struct Printer *printer, struct Job *job, const int buffer) {
+/*void PrinterPrintJob(const struct Printer *printer, struct Job *job, const int buffer) {
 	if(!printer || !job) return;
-	fprintf(stderr, "Printer %d starts\tprinting %d pages from buffer[%d]\n",
+
+	fprintf(stderr, "Printer %d starts printing %d pages from buffer[%d]\n",
 			printer->id,
 			JobGetPages(job),
-			buffer);
-}
+			JobGetBuffer(job));
+	sleep(JobGetPages(job));
+	Job_(&job);
+}*/
 
 /** run the printer
  @return non-zero on success */
 int PrinterRun(struct Printer *p) {
 	if(!p || p->is_running) return 0;
-	pthread_create(&p->thread, 0, (void *(*)(void *))&thread, p);
+	if(pthread_create(&p->thread, 0, (void *(*)(void *))&thread, p)) {
+		fprintf(stderr, "Printer %d: broken.\n", p->id);
+		return 0;
+	}
+	sem_post(empty);
 	p->is_running = -1;
 	return -1;
 }
 
 /* private */
 
+/** run the printer
+ @return the number of pages it has printed */
 static void *thread(struct Printer *p) {
-	/*sleep();*/
-	return 0;
+	struct Job *job;
+
+	for( ; ; ) {
+		printf("Printer %d waiting.\n", p->id);
+		sem_wait(full);
+		printf("Printer %d go!\n", p->id);
+		if(!(job = SpoolPopJob())) {
+			fprintf(stderr, "Printer %d: nothing to print; exiting.\n", p->id);
+			break;
+		} else {
+			const char *name = ClientGetName(JobGetClient(job));
+			int pp           = JobGetPages(job);
+			int buf          = JobGetBuffer(job);
+			fprintf(stderr, "Printer %d starts printing %d pages from buffer[%d] (from %s)\n",
+					p->id, pp, buf, name);
+			/*sleep(pp); fixme */
+			JobPrintPages(job, pp);
+			Job_(&job);
+		}
+		sem_post(empty);
+	}
+	sem_post(full);
+
+	return 0; /* fixme */
 }
