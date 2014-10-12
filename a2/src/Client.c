@@ -13,6 +13,7 @@
 
 #include <unistd.h> /* sleep */
 #include <pthread.h>
+#include <semaphore.h>
 
 #include "Spool.h"
 #include "Job.h"
@@ -28,6 +29,8 @@ struct Client {
 	int pages_max;
 	int prints;
 };
+
+extern sem_t mutex, empty, full;
 
 static const int min_page = 1;
 static const int max_page = 10;
@@ -126,6 +129,7 @@ static void *thread(struct Client *client) {
 		job = Job(client, random_int(client->pages_min, client->pages_max));
 		/*fprintf(stderr, "%s has %d pages to print\n", client->name, JobGetPages(job));*/
 		if(!SpoolJob(job)) {
+			/*wait();*/
 			printf("something");
 		}
 		/*sleep(client->ms_idle);*/

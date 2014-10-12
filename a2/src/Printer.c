@@ -10,6 +10,7 @@
 #include <stdio.h>  /* fprintf */
 
 #include <pthread.h>
+#include <semaphore.h>
 
 #include "Job.h"
 #include "Printer.h"
@@ -20,6 +21,8 @@ struct Printer {
 	int id;
 	int ms_per_page;
 };
+
+extern sem_t mutex, empty, full;
 
 static void *thread(struct Printer *p);
 
