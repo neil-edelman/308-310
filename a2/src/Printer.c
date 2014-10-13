@@ -8,9 +8,13 @@
 
 #include <stdlib.h> /* malloc free */
 #include <stdio.h>  /* fprintf */
+#include <string.h> /* strerror */
+#include <errno.h>  /* strerror */
 
 #include <pthread.h>
 #include <semaphore.h>
+#include <unistd.h> /* sleep for hack */
+/*#include <time.h>*/
 
 #include "Job.h"
 #include "Client.h"
@@ -23,6 +27,8 @@ struct Printer {
 	int id;
 	int ms_per_page; /* not used */
 };
+
+static const int s_shutdown = 2;
 
 extern sem_t *mutex, *empty, *full;
 
@@ -57,6 +63,8 @@ struct Printer *Printer(const int ms_per_page) {
 			printer->ms_per_page / 1000.0,
 			(void *)printer);
 
+	if(sem_post(empty) == -1) perror("empty"); /* we are scewed if this happens */
+
 	return printer;
 }
 
@@ -77,6 +85,9 @@ void Printer_(struct Printer **printer_ptr) {
 	}
 	free(printer);
 	*printer_ptr = printer = 0;
+
+	if(sem_trywait(empty) == -1) perror("empty");
+
 }
 
 /** @return id */
@@ -119,8 +130,15 @@ static void *thread(struct Printer *p) {
 
 	for( ; ; ) {
 		printf("Printer %d waiting.\n", p->id);
-		sem_wait(full);
-		printf("Printer %d go!\n", p->id);
+		/* clock_gettime(CLOCK_MONOTONIC, &ts) doesn't work on my OS so
+		 sem_timedwait(full) doesn't work; hack: the printer always waits
+		 s_shutdown s and then it polls wheater it has jobs */
+		sleep(s_shutdown);
+		if(sem_trywait(full) == -1) {
+			fprintf(stderr, "Printer %d: exiting; %s.\n", p->id, strerror(errno));
+			return 0;
+		}
+		fprintf(stderr, "Printer %d go!\n", p->id);
 		if(!(job = SpoolPopJob())) {
 			fprintf(stderr, "Printer %d: nothing to print; exiting.\n", p->id);
 			break;
@@ -134,9 +152,8 @@ static void *thread(struct Printer *p) {
 			JobPrintPages(job, pp);
 			Job_(&job);
 		}
-		sem_post(empty);
+		if(sem_post(empty) == -1) perror("full");
 	}
-	sem_post(full);
 
 	return 0; /* fixme */
 }

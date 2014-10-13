@@ -39,9 +39,9 @@ struct Spool {
 static const int ms_per_page  = 1000;
 /* 644 */
 static const int permission   = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
-static const char *mutex_name = "/PrinterSimulation-mutex";
-static const char *empty_name = "/PrinterSimulation-empty";
-static const char *full_name  = "/PrinterSimulation-full";
+static const char *mutex_name = "/tmp/PrinterSimulation-mutex";
+static const char *empty_name = "/tmp/PrinterSimulation-empty";
+static const char *full_name  = "/tmp/PrinterSimulation-full";
 
 /* globals are initailased */
 
@@ -94,7 +94,7 @@ int main(int argc, char **argv) {
 	/* seed the random */
 	srand(clock());
 
-	/* initaialise the semaphores */
+	/* semaphores */
 	if(!semaphores()) return EXIT_FAILURE;
 	atexit(&semaphores_);
 
@@ -103,9 +103,6 @@ int main(int argc, char **argv) {
 	for(i = 0; i < printers; i++) PrinterRun(the_spool->printer[i]);
 	for(i = 0; i < clients;  i++) ClientRun(the_spool->client[i]);
 	Spool_(&the_spool);
-
-	/* destroy the semaphores */
-	/*semaphores_();*/
 
 	return EXIT_SUCCESS;
 }
@@ -159,8 +156,9 @@ void Spool_(struct Spool **s_ptr) {
 	int i;
 
 	if(!s_ptr || !(s = *s_ptr)) return;
+	fprintf(stderr, "~Spool: begin erasing!\n");
 	for(i = 0; i < s->jobs_size;     i++) Job_(&s->job[i]);
-	for(i = 0; i < s->printers_size; i++) { sem_post(full); Printer_(&s->printer[i]); }
+	for(i = 0; i < s->printers_size; i++) Printer_(&s->printer[i]);
 	for(i = 0; i < s->clients_size;  i++) Client_(&s->client[i]);
 	fprintf(stderr, "~Spool: erase, #%p.\n", (void *)s);
 	free(s);
@@ -171,32 +169,33 @@ void Spool_(struct Spool **s_ptr) {
  @param job
  @return non-zero on success */
 int SpoolPushJob(/*const */struct Job *job) {
-	int ret;
+	int ret = 0;
+	int spot = 0;
 
 	if(!the_spool || !job || JobGetPages(job) <= 0) return 0;
 
-	printf("%s has %d pages to print, ",
-		   ClientGetName(JobGetClient(job)),
-		   JobGetPages(job));
-
 	/* critical section */
 	sem_wait(mutex);
-	if(!the_spool->empty && the_spool->head == the_spool->tail) {
-		ret = 0;
-	} else {
+	if(the_spool->empty || the_spool->head != the_spool->tail) {
 		the_spool->empty = 0;
-		JobSetBuffer(job, the_spool->head);
-		the_spool->job[the_spool->head] = (struct Job *)job;
-		the_spool->head = (the_spool->head + 1) % the_spool->jobs_size;
+		JobSetBuffer(job, spot = the_spool->head);
+		the_spool->job[spot] = (struct Job *)job;
+		the_spool->head = (spot + 1) % the_spool->jobs_size;
 		ret = -1;
 	}
 	sem_post(mutex);
 
 	/* spool is full */
 	if(!ret) {
-		printf("buffer full, sleeps\n");
+		printf("%s has %d pages to print but buffer full, sleeps\n",
+			   ClientGetName(JobGetClient(job)),
+			   JobGetPages(job));
 	} else {
-		printf("puts request in Buffer[%d] [%d,%d]\n", the_spool->head, the_spool->tail, the_spool->head);
+		printf("%s has %d pages to print, puts request in Buffer[%d] [%d,%d]\n",
+			   ClientGetName(JobGetClient(job)), JobGetPages(job),
+			   spot, the_spool->tail, the_spool->head);
+		/* signal that we have got a print job */
+		sem_post(full);
 	}
 
 	return ret;
@@ -218,6 +217,25 @@ struct Job *SpoolPopJob(void) {
 	sem_post(mutex);
 
 	return job;
+}
+
+/** prints out the semaphores for debuging
+ produces "mutex: Function not implemented" on my os */
+void SpoolSemaphores(void) {
+	int m, e, f;
+	if(sem_getvalue(mutex, &m) == -1) {
+		perror("mutex");
+		return;
+	}
+	if(sem_getvalue(empty, &e) == -1) {
+		perror("empty");
+		return;
+	}
+	if(sem_getvalue(full, &f) == -1) {
+		perror("full");
+		return;
+	}
+	fprintf(stderr, " -> mutex %d; empty %d; full %d\n", m, e, f);
 }
 
 /* private */
@@ -260,6 +278,10 @@ static int semaphores(void) {
 		semaphores_();
 		return 0;
 	}
+
+	/* print the semaphores */
+	/*SpoolSemaphores();*/
+
 	return -1;
 }
 
@@ -270,6 +292,10 @@ static void semaphores_(void) {
 	/*if(s->is_mutex) { sem_destroy(&s->mutex); s->is_mutex = 0; }
 	 if(s->is_empty) { sem_destroy(&s->empty); s->is_empty = 0; }
 	 if(s->is_full)  { sem_destroy(&s->full);  s->is_full = 0; }*/
+
+	/* print the semaphores */
+	/*SpoolSemaphores();*/
+
 	/* we're exiting, we have to just put up with errors I suppose */
 	fprintf(stderr, "Spool::~semaphores: closing.\n");
 	if(mutex) {

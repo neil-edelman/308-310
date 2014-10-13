@@ -5,3 +5,4 @@ struct Spool *Spool(const int jobs_size, const int printers_size, const int clie
 void Spool_(struct Spool **);
 int SpoolPushJob(/*const */struct Job *job);
 struct Job *SpoolPopJob(void);
+void SpoolSemaphores(void);

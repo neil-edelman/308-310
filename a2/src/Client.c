@@ -13,7 +13,7 @@
 
 #include <unistd.h> /* sleep */
 #include <pthread.h>
-#include <semaphore.h>
+/*#include <semaphore.h>*/
 
 #include "Spool.h"
 #include "Job.h"
@@ -30,7 +30,7 @@ struct Client {
 	int prints;
 };
 
-extern sem_t *mutex, *empty, *full;
+/*extern sem_t *mutex, *empty, *full;*/
 
 static const int min_page = 1;
 static const int max_page = 10;
@@ -81,6 +81,7 @@ struct Client *Client(void) {
 	client->prints    = 1; /* the client is only sending one print job, ala example */
 	random_name(client->name);
 	fprintf(stderr, "Client: new, %s (%d) #%p.\n", client->name, client->id, (void *)client);
+	/*fixme! post(empty);*/
 
 	return client;
 }
@@ -133,12 +134,7 @@ static void *thread(struct Client *client) {
 			Job_(&job);
 			/*wait(empty);*/
 		}
-		/*sem_wait(empty);
-		sem_wait(mutex);
-		sem_post(mutex);
-		sem_post(full);*/
 		/*sleep(client->ms_idle);*/
-		/*Job_(&job); <- handed over control to Spool */
 	}
 	fprintf(stderr, "%s signing off.\n", client->name);
 	return 0;
