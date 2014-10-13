@@ -13,7 +13,7 @@
 
 #include <unistd.h> /* sleep */
 #include <pthread.h>
-/*#include <semaphore.h>*/
+#include <semaphore.h>
 
 #include "Spool.h"
 #include "Job.h"
@@ -31,10 +31,11 @@ struct Client {
 };
 
 /*extern sem_t *mutex, *empty, *full;*/
+extern sem_t *empty;
 
 static const int min_page = 1;
 static const int max_page = 10;
-static const int time_between_prints = 5000; /* ms */
+static const int time_between_prints = 1; /* s */
 
 /* private */
 
@@ -125,16 +126,18 @@ int ClientRun(struct Client *c) {
 static void *thread(struct Client *client) {
 	struct Job *job;
 
-	if(!client) return 0;
-	for( ; client->prints; client->prints--) {
+	if(!client || client->prints <= 0) return 0;
+	for( ; ; ) {
 		job = Job(client, random_int(client->pages_min, client->pages_max));
 		/*fprintf(stderr, "%s has %d pages to print\n", client->name, JobGetPages(job));*/
-		if(!SpoolPushJob(job)) {
-			printf("%s: couldn't push job; full spool.\n", client->name);
-			Job_(&job);
-			/*wait(empty);*/
+		while(!SpoolPushJob(job)) {
+			fprintf(stderr, "%s: couldn't push job; full spool.\n", client->name);
+			/* fixme: probably wouldn't want the client waiting for the printer;
+			 buffer the prints on the client side as well */
+			sem_wait(empty);
 		}
-		/*sleep(client->ms_idle);*/
+		if(--client->prints) break;
+		sleep(time_between_prints);
 	}
 	fprintf(stderr, "%s signing off.\n", client->name);
 	return 0;

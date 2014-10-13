@@ -9,6 +9,8 @@
 #include <stdlib.h> /* malloc free rand */
 #include <stdio.h>  /* fprintf */
 #include <time.h>   /* clock */
+#include <string.h> /* strerror */
+#include <errno.h>  /* strerror */
 
 #include <pthread.h>
 #include <semaphore.h>
@@ -36,7 +38,7 @@ struct Spool {
 };
 /*static const int buffer_size = sizeof((struct Spool *)0)->buffer / sizeof(struct Job *);*/
 
-static const int ms_per_page  = 1000;
+static const int ms_per_page  = 1000; /* unused */
 /* 644 */
 static const int permission   = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 static const char *mutex_name = "/tmp/PrinterSimulation-mutex";
@@ -50,7 +52,7 @@ sem_t *mutex, *empty, *full;
 static struct Spool *the_spool;
 
 /* private */
-static int semaphores(void);
+static int semaphores(const int);
 static void semaphores_(void);
 static void usage(void);
 
@@ -95,7 +97,7 @@ int main(int argc, char **argv) {
 	srand(clock());
 
 	/* semaphores */
-	if(!semaphores()) return EXIT_FAILURE;
+	if(!semaphores(jobs)) return EXIT_FAILURE;
 	atexit(&semaphores_);
 
 	/* print stuff with multiple threads */
@@ -139,7 +141,6 @@ struct Spool *Spool(const int jobs_size, const int printers_size, const int clie
 	for(i = 0; i < printers_size; i++) s->printer[i] = 0;
 	for(i = 0; i <  clients_size; i++) s->client[i]  = 0;
 
-	for(i = 0; i <     jobs_size; i++) s->job[i]     = 0;
 	for(i = 0; i < printers_size; i++) s->printer[i] = Printer(ms_per_page);
 	for(i = 0; i <  clients_size; i++) s->client[i]  = Client();
 
@@ -174,11 +175,13 @@ int SpoolPushJob(/*const */struct Job *job) {
 
 	if(!the_spool || !job || JobGetPages(job) <= 0) return 0;
 
-	/* critical section */
+	/* sem_wait(empty); <- but doesn't display "buffer full;" just waits */
+
+	/* critical section -- place job in queue */
 	sem_wait(mutex);
 	if(the_spool->empty || the_spool->head != the_spool->tail) {
 		the_spool->empty = 0;
-		JobSetBuffer(job, spot = the_spool->head);
+		JobSetBuffer(job, spot = the_spool->head); /* cosmetic */
 		the_spool->job[spot] = (struct Job *)job;
 		the_spool->head = (spot + 1) % the_spool->jobs_size;
 		ret = -1;
@@ -242,7 +245,7 @@ void SpoolSemaphores(void) {
 
 /** initailises the global semaphores
  @return non-zero on success */
-static int semaphores(void) {
+static int semaphores(const int jobs) {
 	/* "mutex: Function not implemented;" my system doesn't allow unnamed
 	 semaphores */
 	/*if(sem_init(&s->mutex, 0, 1) == -1) {
@@ -265,7 +268,7 @@ static int semaphores(void) {
 		return 0;
 	}
 	if(sem_unlink(empty_name) == -1);
-	if((empty = sem_open(empty_name, O_CREAT | O_EXCL, permission, 0)) == SEM_FAILED) {
+	if((empty = sem_open(empty_name, O_CREAT | O_EXCL, permission, jobs)) == SEM_FAILED) {
 		perror("empty");
 		empty = 0;
 		semaphores_();

@@ -28,7 +28,7 @@ struct Printer {
 	int ms_per_page; /* not used */
 };
 
-static const int s_shutdown = 2;
+static const int s_shutdown = 1;
 
 extern sem_t *mutex, *empty, *full;
 
@@ -63,8 +63,6 @@ struct Printer *Printer(const int ms_per_page) {
 			printer->ms_per_page / 1000.0,
 			(void *)printer);
 
-	if(sem_post(empty) == -1) perror("empty"); /* we are scewed if this happens */
-
 	return printer;
 }
 
@@ -85,28 +83,10 @@ void Printer_(struct Printer **printer_ptr) {
 	}
 	free(printer);
 	*printer_ptr = printer = 0;
-
-	if(sem_trywait(empty) == -1) perror("empty");
-
 }
 
 /** @return id */
 int PrinterGetId(const struct Printer *p) { return p ? p->id : 0; }
-
-/** print a job (sleep)
- @param printer
- @param job
- @param buffer */
-/*void PrinterPrintJob(const struct Printer *printer, struct Job *job, const int buffer) {
-	if(!printer || !job) return;
-
-	fprintf(stderr, "Printer %d starts printing %d pages from buffer[%d]\n",
-			printer->id,
-			JobGetPages(job),
-			JobGetBuffer(job));
-	sleep(JobGetPages(job));
-	Job_(&job);
-}*/
 
 /** run the printer
  @return non-zero on success */
@@ -129,26 +109,27 @@ static void *thread(struct Printer *p) {
 	struct Job *job;
 
 	for( ; ; ) {
-		printf("Printer %d waiting.\n", p->id);
+		fprintf(stderr, "Printer %d waiting.\n", p->id);
 		/* clock_gettime(CLOCK_MONOTONIC, &ts) doesn't work on my OS so
 		 sem_timedwait(full) doesn't work; hack: the printer always waits
 		 s_shutdown s and then it polls wheater it has jobs */
 		sleep(s_shutdown);
 		if(sem_trywait(full) == -1) {
-			fprintf(stderr, "Printer %d: exiting; %s.\n", p->id, strerror(errno));
+			fprintf(stderr, "Printer %d: exiting; %s.\n", p->id,
+					errno == EAGAIN ? "no jobs" : strerror(errno));
 			return 0;
 		}
 		fprintf(stderr, "Printer %d go!\n", p->id);
 		if(!(job = SpoolPopJob())) {
-			fprintf(stderr, "Printer %d: nothing to print; exiting.\n", p->id);
+			fprintf(stderr, "Printer %d: found nothing to print; very weird; exiting.\n", p->id);
 			break;
 		} else {
 			const char *name = ClientGetName(JobGetClient(job));
 			int pp           = JobGetPages(job);
 			int buf          = JobGetBuffer(job);
-			fprintf(stderr, "Printer %d starts printing %d pages from buffer[%d] (from %s)\n",
+			printf("Printer %d starts printing %d pages from buffer[%d] (from %s)\n",
 					p->id, pp, buf, name);
-			/*sleep(pp); fixme */
+			sleep(pp);
 			JobPrintPages(job, pp);
 			Job_(&job);
 		}
