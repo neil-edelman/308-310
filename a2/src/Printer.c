@@ -25,7 +25,6 @@ struct Printer {
 	pthread_t thread;
 	int is_running;
 	int id;
-	int ms_per_page; /* not used */
 };
 
 static const int s_shutdown = 1;
@@ -43,13 +42,9 @@ static int unique = 1; /* counter to assign id */
 /** constructor
  @param  ms_per_page speed of the printer
  @return             an object or a null pointer if the object couldn't be created */
-struct Printer *Printer(const int ms_per_page) {
+struct Printer *Printer(void) {
 	struct Printer *printer;
 
-	if(ms_per_page <= 0) {
-		fprintf(stderr, "Printer: invalid parameters.\n");
-		return 0;
-	}
 	if(!(printer = malloc(sizeof(struct Printer)))) {
 		perror("Printer constructor");
 		Printer_(&printer);
@@ -57,10 +52,9 @@ struct Printer *Printer(const int ms_per_page) {
 	}
 	printer->is_running  = 0;
 	printer->id          = unique++;
-	printer->ms_per_page = ms_per_page;
 	fprintf(stderr, "Printer: new, %d with %fs/page #%p.\n",
 			printer->id,
-			printer->ms_per_page / 1000.0,
+			/*printer->ms_per_page / 1000.0*/1000.0,
 			(void *)printer);
 
 	return printer;
@@ -96,7 +90,6 @@ int PrinterRun(struct Printer *p) {
 		fprintf(stderr, "Printer %d: broken.\n", p->id);
 		return 0;
 	}
-	sem_post(empty);
 	p->is_running = -1;
 	return -1;
 }
@@ -121,7 +114,7 @@ static void *thread(struct Printer *p) {
 		}
 		fprintf(stderr, "Printer %d go!\n", p->id);
 		if(!(job = SpoolPopJob())) {
-			fprintf(stderr, "Printer %d: found nothing to print; very weird; exiting.\n", p->id);
+			fprintf(stderr, "Printer %d: found nothing to print; very weird; shutting down.\n", p->id);
 			break;
 		} else {
 			const char *name = ClientGetName(JobGetClient(job));
@@ -133,7 +126,7 @@ static void *thread(struct Printer *p) {
 			JobPrintPages(job, pp);
 			Job_(&job);
 		}
-		if(sem_post(empty) == -1) perror("full");
+		if(sem_post(empty) == -1) perror("empty");
 	}
 
 	return 0; /* fixme */

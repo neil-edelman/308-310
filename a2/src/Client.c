@@ -130,14 +130,13 @@ static void *thread(struct Client *client) {
 	for( ; ; ) {
 		job = Job(client, random_int(client->pages_min, client->pages_max));
 		/*fprintf(stderr, "%s has %d pages to print\n", client->name, JobGetPages(job));*/
-		while(!SpoolPushJob(job)) {
-			fprintf(stderr, "%s: couldn't push job; full spool.\n", client->name);
-			/* fixme: probably wouldn't want the client waiting for the printer;
-			 buffer the prints on the client side as well */
-			sem_wait(empty);
+		if(!SpoolPushJob(job)) {
+			fprintf(stderr, "Client: %s couldn't push job.\n", client->name);
+			return (void *)-1;
 		}
-		if(--client->prints) break;
-		sleep(time_between_prints);
+		if(--client->prints >= 0) break;
+		fprintf(stderr, " *********** %s has more to print!?\n", client->name);
+		sleep(client->ms_idle);
 	}
 	fprintf(stderr, "%s signing off.\n", client->name);
 	return 0;

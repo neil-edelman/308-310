@@ -38,7 +38,6 @@ struct Spool {
 };
 /*static const int buffer_size = sizeof((struct Spool *)0)->buffer / sizeof(struct Job *);*/
 
-static const int ms_per_page  = 1000; /* unused */
 /* 644 */
 static const int permission   = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 static const char *mutex_name = "/tmp/PrinterSimulation-mutex";
@@ -141,7 +140,7 @@ struct Spool *Spool(const int jobs_size, const int printers_size, const int clie
 	for(i = 0; i < printers_size; i++) s->printer[i] = 0;
 	for(i = 0; i <  clients_size; i++) s->client[i]  = 0;
 
-	for(i = 0; i < printers_size; i++) s->printer[i] = Printer(ms_per_page);
+	for(i = 0; i < printers_size; i++) s->printer[i] = Printer();
 	for(i = 0; i <  clients_size; i++) s->client[i]  = Client();
 
 	fprintf(stderr, "Spool: new, jobs %d, printers %d, clients %d, #%p.\n",
@@ -175,7 +174,20 @@ int SpoolPushJob(/*const */struct Job *job) {
 
 	if(!the_spool || !job || JobGetPages(job) <= 0) return 0;
 
-	/* sem_wait(empty); <- but doesn't display "buffer full;" just waits */
+	if(sem_trywait(empty) == -1) {
+		if(errno == EAGAIN) {
+			printf("%s has %d pages to print, but buffer full.\n",
+				   ClientGetName(JobGetClient(job)),
+				   JobGetPages(job));
+		} else {
+			perror("empty");
+			return 0;
+		}
+		if(sem_wait(empty) == -1) {
+			perror("empty");
+			return 0;
+		}
+	}
 
 	/* critical section -- place job in queue */
 	sem_wait(mutex);
@@ -190,9 +202,7 @@ int SpoolPushJob(/*const */struct Job *job) {
 
 	/* spool is full */
 	if(!ret) {
-		printf("%s has %d pages to print but buffer full, sleeps\n",
-			   ClientGetName(JobGetClient(job)),
-			   JobGetPages(job));
+		fprintf(stderr, "SpoolPushJob: mismatch between semaphore and counter.\n");
 	} else {
 		printf("%s has %d pages to print, puts request in Buffer[%d] [%d,%d]\n",
 			   ClientGetName(JobGetClient(job)), JobGetPages(job),
