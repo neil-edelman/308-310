@@ -13,8 +13,8 @@
 
 #include <pthread.h>
 #include <semaphore.h>
+/*#include <time.h> timeval isn't portable */
 #include <unistd.h> /* sleep for hack */
-/*#include <time.h>*/
 
 #include "Job.h"
 #include "Client.h"
@@ -29,7 +29,7 @@ struct Printer {
 
 static const int s_shutdown = 1;
 
-extern sem_t *mutex, *empty, *full;
+extern sem_t *empty, *full;
 
 static void *thread(struct Printer *p);
 
@@ -108,15 +108,27 @@ static void *thread(struct Printer *p) {
 		 s_shutdown s and then it polls wheater it has jobs */
 		sleep(s_shutdown);
 		if(sem_trywait(full) == -1) {
-			fprintf(stderr, "Printer %d: exiting; %s.\n", p->id,
-					errno == EAGAIN ? "no jobs" : strerror(errno));
+			if(errno == EAGAIN) {
+				printf("No request in buffer, Printer %d sleeps.\n", p->id);
+			} else {
+				perror("full");
+			}
+			/*fprintf(stderr, "Printer %d: exiting; %s.\n", p->id,
+					errno == EAGAIN ? "no jobs" : strerror(errno));*/
 			return 0;
 		}
 		fprintf(stderr, "Printer %d go!\n", p->id);
-		if(!(job = SpoolPopJob())) {
-			fprintf(stderr, "Printer %d: found nothing to print; very weird; shutting down.\n", p->id);
-			break;
-		} else {
+		/* yes! this does get called about 1% of the time; I made it sleep 1s;
+		 I have not tested it because it's non-deterministic */
+		/* it happend again; this doesn't fix it */
+		while(!(job = SpoolPopJob())) {
+			fprintf(stderr, "Printer %d: found nothing to print;\n", p->id);
+			fprintf(stderr, "this could be caused by multiple instances, signals from past runs interfering\n");
+			fprintf(stderr, "with the semaphores, or gremlins; try again.\n");
+			/*sleep(1);*/
+			exit(EXIT_FAILURE); /* FIXME!!! */
+		}
+		{
 			const char *name = ClientGetName(JobGetClient(job));
 			int pp           = JobGetPages(job);
 			int buf          = JobGetBuffer(job);

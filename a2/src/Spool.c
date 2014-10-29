@@ -12,9 +12,14 @@
 #include <string.h> /* strerror */
 #include <errno.h>  /* strerror */
 
+/* some unices don't include this (eg mimi.cs.mcgill.ca) */
+#include <fcntl.h>    /* O_* constants */
+#include <sys/stat.h> /* mode constants */
+#include <getopt.h>   /* getopt (c99 sometimes doesn't include this) */
+
 #include <pthread.h>
 #include <semaphore.h>
-#include <unistd.h> /* getopt */
+#include <unistd.h>   /* getopt */
 
 #include "Job.h"
 #include "Client.h"
@@ -40,13 +45,14 @@ struct Spool {
 
 /* 644 */
 static const int permission   = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
-static const char *mutex_name = "/tmp/PrinterSimulation-mutex";
-static const char *empty_name = "/tmp/PrinterSimulation-empty";
-static const char *full_name  = "/tmp/PrinterSimulation-full";
+static const char *mutex_name = "/PrinterSimulation-mutex";
+static const char *empty_name = "/PrinterSimulation-empty";
+static const char *full_name  = "/PrinterSimulation-full";
 
 /* globals are initailased */
 
-sem_t *mutex, *empty, *full;
+sem_t        *empty, *full;
+static sem_t *mutex;
 
 static struct Spool *the_spool;
 
@@ -102,8 +108,11 @@ int main(int argc, char **argv) {
 	/* print stuff with multiple threads */
 	if(!(the_spool = Spool(jobs, printers, clients))) return EXIT_FAILURE;
 	for(i = 0; i < printers; i++) PrinterRun(the_spool->printer[i]);
+	/* fixme: the printers have to be started first, I think */
 	for(i = 0; i < clients;  i++) ClientRun(the_spool->client[i]);
 	Spool_(&the_spool);
+
+	printf("Shutting down.\n");
 
 	return EXIT_SUCCESS;
 }
@@ -166,8 +175,9 @@ void Spool_(struct Spool **s_ptr) {
 }
 
 /** attempts to spool the job to the printing queue in the_spool
- @param job
- @return non-zero on success */
+ @param  job
+ @return non-zero on success
+ @fixme  refactor, ugly */
 int SpoolPushJob(/*const */struct Job *job) {
 	int ret = 0;
 	int spot = 0;
@@ -190,7 +200,7 @@ int SpoolPushJob(/*const */struct Job *job) {
 	}
 
 	/* critical section -- place job in queue */
-	sem_wait(mutex);
+	if(sem_wait(mutex) == -1) { perror("mutex"); exit(EXIT_FAILURE); }
 	if(the_spool->empty || the_spool->head != the_spool->tail) {
 		the_spool->empty = 0;
 		JobSetBuffer(job, spot = the_spool->head); /* cosmetic */
@@ -198,17 +208,17 @@ int SpoolPushJob(/*const */struct Job *job) {
 		the_spool->head = (spot + 1) % the_spool->jobs_size;
 		ret = -1;
 	}
-	sem_post(mutex);
+	if(sem_post(mutex) == -1) { perror("mutex"); exit(EXIT_FAILURE); }
 
-	/* spool is full */
 	if(!ret) {
+		/* spool is full */
 		fprintf(stderr, "SpoolPushJob: mismatch between semaphore and counter.\n");
 	} else {
 		printf("%s has %d pages to print, puts request in Buffer[%d] [%d,%d]\n",
 			   ClientGetName(JobGetClient(job)), JobGetPages(job),
 			   spot, the_spool->tail, the_spool->head);
-		/* signal that we have got a print job */
-		sem_post(full);
+		/* signal that we have got a print job; fixme: kind of drastic */
+		if(sem_post(full) == -1) { perror("full"); exit(EXIT_FAILURE); }
 	}
 
 	return ret;
@@ -221,13 +231,13 @@ struct Job *SpoolPopJob(void) {
 
 	if(!the_spool) return 0;
 
-	sem_wait(mutex);
+	if(sem_wait(mutex) == -1) { perror("mutex"); exit(EXIT_FAILURE); }
 	if(!the_spool->empty) {
 		job = the_spool->job[the_spool->tail];
 		the_spool->tail = (the_spool->tail + 1) % the_spool->jobs_size;
 		if(the_spool->tail == the_spool->head) the_spool->empty = -1;
 	}
-	sem_post(mutex);
+	if(sem_post(mutex) == -1) { perror("mutex"); exit(EXIT_FAILURE); }
 
 	return job;
 }

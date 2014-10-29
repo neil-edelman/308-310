@@ -13,7 +13,6 @@
 
 #include <unistd.h> /* sleep */
 #include <pthread.h>
-#include <semaphore.h>
 
 #include "Spool.h"
 #include "Job.h"
@@ -30,12 +29,11 @@ struct Client {
 	int prints;
 };
 
-/*extern sem_t *mutex, *empty, *full;*/
-extern sem_t *empty;
-
 static const int min_page = 1;
 static const int max_page = 10;
 static const int time_between_prints = 1; /* s */
+static const int min_prints = 1;
+static const int max_prints = 3;
 
 /* private */
 
@@ -54,7 +52,8 @@ static const char *suffixes[] = { /* max chars 7 */
 	"agh", "ash", "bag", "ronk", "bubhosh", "burz", "dug", "durbat", "durb",
 	"ghash", "gimbat", "gimb", "-glob", "glob", "gul", "hai", "ishi", "krimpat",
 	"krimp", "lug", "nazg", "nazgul", "olog", "shai", "sha", "sharku", "snaga",
-	"thrakat", "thrak", "gorg", "khalok", "snar", "kurta", "ness"
+	"thrakat", "thrak", "gorg", "khalok", "snar", "kurta", "ness", "-dug",
+	"-gimb"
 };
 static const int suffixes_size = sizeof(suffixes) / sizeof(char *);
 
@@ -79,7 +78,7 @@ struct Client *Client(void) {
 	client->ms_idle   = time_between_prints;
 	client->pages_min = min_page;
 	client->pages_max = max_page;
-	client->prints    = 1; /* the client is only sending one print job, ala example */
+	client->prints    = random_int(min_prints, max_prints);
 	random_name(client->name);
 	fprintf(stderr, "Client: new, %s (%d) #%p.\n", client->name, client->id, (void *)client);
 	/*fixme! post(empty);*/
@@ -129,16 +128,11 @@ static void *thread(struct Client *client) {
 	if(!client || client->prints <= 0) return 0;
 	for( ; ; ) {
 		job = Job(client, random_int(client->pages_min, client->pages_max));
-		/*fprintf(stderr, "%s has %d pages to print\n", client->name, JobGetPages(job));*/
-		if(!SpoolPushJob(job)) {
-			fprintf(stderr, "Client: %s couldn't push job.\n", client->name);
-			return (void *)-1;
-		}
-		if(--client->prints >= 0) break;
-		fprintf(stderr, " *********** %s has more to print!?\n", client->name);
+		if(!SpoolPushJob(job)) return (void *)-1;
+		if(--client->prints <= 0) break;
 		sleep(client->ms_idle);
 	}
-	fprintf(stderr, "%s signing off.\n", client->name);
+	printf("%s signing off.\n", client->name);
 	return 0;
 }
 
