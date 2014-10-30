@@ -3,9 +3,9 @@ struct Threads;
 int Threads(void);
 void Threads_(void);
 struct Thread *ThreadsCreate(const char *name,
-							 void (*func)(void),
+							 void (*func)(const int),
 							 const int stack);
-void ThreadsExit(struct Thread *t);
+void ThreadsExit(const int exit_no/*struct Thread *t*/);
 void ThreadsRun(void);
 struct Semaphore *ThreadsSemaphore(const int value);
 void ThreadsSemaphore_(struct Semaphore **sptr);

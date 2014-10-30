@@ -18,6 +18,7 @@ static const int versionMajor  = 1;
 static const int versionMinor  = 0;
 
 static void usage(void);
+static void foo(const int exit);
 
 /** entry point
  @param argc the number of arguments starting with the programme name
@@ -30,13 +31,25 @@ int main(int argc, char **argv) {
 	}
 
 	ThreadsPrintState(stdout);
+	fprintf(stderr, "Oops, we forgot to initialise!\n\n");
 
 	Threads();
 
+	fprintf(stderr, "\nInitial state:\n");
 	ThreadsPrintState(stdout);
+	fprintf(stderr, "\n");
+
+	ThreadsCreate("foo", &foo, 100);
+	ThreadsCreate("bar", &foo, 100);
+
+	ThreadsPrintState(stdout);
+
+	fprintf(stderr, "\nNow we run.\n");
+	ThreadsRun();
 
 	printf("It works.\n");
 
+	fprintf(stderr, "\nDon't forget exit cleanup!\n");
 	Threads_();
 
 	return EXIT_SUCCESS;
@@ -48,4 +61,16 @@ static void usage(void) {
 	fprintf(stderr, "Version %d.%d.\n\n", versionMajor, versionMinor);
 	fprintf(stderr, "%s Copyright %s Neil Edelman\n", programme, year);
 	fprintf(stderr, "This program comes with ABSOLUTELY NO WARRANTY.\n\n");
+}
+
+static void foo(const int exit) {
+	int i;
+
+	for(i = 0; i < 10; i++) {
+		printf("foo!\n");
+		sleep(1);
+	}
+	printf("foo exit!\n");
+
+	ThreadsExit(exit);
 }
