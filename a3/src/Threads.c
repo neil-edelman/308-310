@@ -1,122 +1,124 @@
 /** 2014 Neil Edelman
 
- (Useless obselete) threads library.
+ (Obselete) threads library.
 
+ @bugs -std=c89,99,etc, does NOT work with Linux's ucontext.h
  @author Neil
- @version 1
+ @version 1.1
  @since 2014 */
 
-#include <stdlib.h> /* malloc free */
-#define _POSIX_SOURCE /* need fileno from stdio */
-#include <stdio.h>  /* fprintf */
-#include <string.h> /* strncpy */
+#ifdef __APPLE__
+#ifndef _XOPEN_SOURCE
+#define HOME
+#define _XOPEN_SOURCE /* MacOS (doesn't work anyway; nice try) */
+#endif
+#endif
+
+#include <stdio.h>    /* fprintf */
+#include <stdlib.h>   /* malloc free */
+#include <string.h>   /* strncpy memset */
+
+#include <unistd.h>   /* sleep */
+#include <sys/time.h> /* itimerval */
+#include <signal.h>   /* sigaction */
 
 #include <fcntl.h>    /* posix */
-#include <ucontext.h> /* deprecated posix */
-#include <sys/types.h>/* posix? */
-#include <sys/time.h> /* struct itimerval posix */
-#include <signal.h>   /* sig posix */
+#include <sys/types.h>/* posix */
+#include <ucontext.h> /* obsolete posix2001; removed from posix2008 */
 
 #include "Threads.h"
 
 enum Run { R_RUNNING, R_BLOCKED, R_EXIT };
 
 /* constants */
-static const char *programme   = "Threads";
-static const char *year        = "2014";
-static const int versionMajor  = 0;
-static const int versionMinor  = 1;
+static const int default_us = 500;
 
 struct Threads {
-	int us;
-	struct Thread    *first_active;
+	struct sigaction action;
+	struct itimerval timer;
+	ucontext_t       this_context;
+	struct sigaction old_action;
+	struct itimerval old_timer;
+	struct Thread    *active;
+	struct Thread    *first_running;
 	struct Thread    *first_blocked;
 	struct Thread    *first_exit;
 	struct Semaphore *first_semaphore;
 };
 
-/* "The table itself needs to be directly addressable and can have an upper
- limit. So this naturally lends to an array type structure. The thread ID is an
- index into this table . . . mythread_control_block"
- mmmmm; instead of a thread id, let's have a pointer directly to the thread,
- then we could grow and shrink dynamically; the thread_id becomes the pointer
- itself, saving the headache of having two unique ids; this helps with types,
- too; 'everything is an int' . . . why obfuscate? also, encapsulation is good */
+/* doubly-linked: I can't get it to work */
 struct Thread {
-	struct Thread *next;
-	ucontext_t context;
-	int  time;
-	enum Run run;
+	struct Thread *prev, *next;
+	ucontext_t context, destroy;
 	char name[64];
-	char stack_size;
 	char *stack;
-	int  exit_no;
+	int stack_size;
+	enum Run run;
+	int  time;
 };
-
 static const int name_size = sizeof((struct Thread *)0)->name / sizeof(char);
 
 struct Semaphore {
-	struct Semaphore *next; /* for cleanup */
-	struct Thread *thread;
+	struct Semaphore *prev, *next;
 	int count;
+	int count_start;
+	struct Thread *first_waiting;
 };
-
-static const int default_quantum_us = 10000;
 
 /* global to make idempotent */
 static struct Threads *threads;
-static int exit_no = 1; /* we are only allowed to pass ints, this is a hack */
 
 /* private */
 static void thread_print(FILE *out, const struct Thread *t, const char *which);
-static void callback(int signal);
-static void usage(void);
+static void timer_callback(int signal);
+static void destroy_callback(void);
 
 /* public */
 
-/** constructor, eg mytread_init()
- "This function initializes all the global data structures for the thread
- system. Mythreads package will maintain many global data structures such as
- the runqueue, a table for thread control blocks. It is your responsibility to
- define the actual data structures. One of the constraints you have the need to
- accommodate ucontext_t inside the data structures."
- @return true, or false if the object couldn't be created */
-int Threads(void) {
-	if(threads) {
-		fprintf(stderr, "Threads: threads library initialised already.\n");
-		return 0;
-	}
+/** constructor; eg mytread_init()
+ @return an object or a null pointer if the object couldn't be created */
+struct Threads *Threads(void) {
+	if(threads) return threads;
 	if(!(threads = malloc(sizeof(struct Threads)))) {
 		perror("Threads constructor");
 		Threads_();
 		return 0;
 	}
-	threads->us              = default_quantum_us;
-	threads->first_active    = 0;
+	/* set up the signal callback thing */
+	memset(&threads->action, 0, sizeof(struct sigaction));
+	threads->action.sa_handler = &timer_callback;
+	sigemptyset(&threads->action.sa_mask);
+	threads->action.sa_flags   = SA_RESTART;
+	/* clear timing */
+	memset(&threads->timer, 0, sizeof(struct itimerval));
+	/* active thread -- active is neccessarily a thread on the list first_running */
+	threads->active          = 0;
+	/* set up the lists (empty) */
+	threads->first_running   = 0;
 	threads->first_blocked   = 0;
-	threads->first_exit      = 0; /* like a memory leak, but intentional */
+	threads->first_exit      = 0;
 	threads->first_semaphore = 0;
+	/* set the default timing */
+	ThreadsSetQuantum(default_us);
+
 	fprintf(stderr, "Threads: new, #%p.\n", (void *)threads);
 
-	return -1;
+	return threads;
 }
 
 /** global destructor */
 void Threads_(void) {
 	struct Thread *t, *next;
 
-	if(!threads) {
-		fprintf(stderr, "~Threads: threads library not initialised.\n");
-		return;
-	}
-	for(t = threads->first_active; t; t = next) {
+	if(!threads) return;
+	for(t = threads->first_running; t; t = next) {
 		next = t->next;
-		fprintf(stderr, "~Threads: forcing thread #%p to exit.\n", (void *)t);
-		ThreadsExit(t->exit_no);
+		fprintf(stderr, "~Threads: terminating thread #%p while it was running.\n", (void *)t);
+		free(t);
 	}
 	for(t = threads->first_blocked; t; t = next) {
 		next = t->next;
-		fprintf(stderr, "~Threads: freeing thread #%p while it was blocked.\n", (void *)t);
+		fprintf(stderr, "~Threads: terminating thread #%p while it was blocked.\n", (void *)t);
 		free(t);
 	}
 	for(t = threads->first_exit; t; t = next) {
@@ -129,168 +131,187 @@ void Threads_(void) {
 	threads = 0;
 }
 
-/** "This function creates a new thread. It returns an integer that points to
- the thread control block that is allocated to the newly created thread in the
- thread control block table. If the library is unable to create the new thread,
- it returns -1 and prints out an error message. This function is responsible
- for allocating the stack and setting up the user context appropriately. The
- newly created thread starts running the threadfunc function when it starts.
- The threadname is stored in the thread control block and is printed for
- information purposes. A newly created thread is in the RUNNABLE state when it
- is inserted into the system. Depending on your system design, the newly
- created thread might be included in the runqueue." Pointers are your friends.
+/** "A newly created thread is in the RUNNABLE state when it is inserted into
+ the system." Pointers are your friends.
  @param name  name of your thread (bounded by name_size - 1)
  @param func  the fuction to start
  @param stack stack byte size
- @param arg   not used?
  @return the created thread or null */
-struct Thread *ThreadsCreate(const char *name,
-							 void (*func)(const int),
-							 const int stack) {
+struct Thread *ThreadsCreate(const char *name, void (*func)(int), const int arg, const int stack_size) {
 	struct Thread *t;
 
-	if(!name || !func || stack <= 0 || !threads) {
+	if(!threads || !name || !func || stack_size <= 0) {
 		fprintf(stderr, "Threads::create: invalid.\n");
 		return 0;
 	}
-	if(!(t = malloc(sizeof(struct Thread) + sizeof(char) * stack))) {
-		perror("Thread constructor");
+	if(!(t = malloc(sizeof(struct Thread) + sizeof(char) * stack_size))) {
+		perror("Thread::create constructor");
 		return 0;
 	}
+	t->prev       = 0;
 	t->next       = 0;
-	t->time       = 0;
-	t->run        = R_RUNNING;
 	strncpy(t->name, name, name_size - 1);
 	t->name[name_size - 1] = '\0';
-	t->stack_size = stack;
 	t->stack      = (char *)(t + 1);
-	t->exit_no    = exit_no;
+	t->stack_size = stack_size;
+	t->run        = R_RUNNING;
+	t->time       = 0; /* fixme: this is unused */
 
-	if(getcontext(&t->context) == -1) {
+	/* create thread context out of func */
+	if(getcontext(&t->context) == -1
+	   || getcontext(&t->destroy) == -1) {
 		perror("getcontext");
 		free(t);
 		return 0;
 	}
 	t->context.uc_stack.ss_sp   = t->stack;
 	t->context.uc_stack.ss_size = t->stack_size;
-	/*t->context.uc_link          = &ctx[0];*/
-	/**** /\ ? *****/
-	/**** how to set func? */
-	makecontext(&t->context, &callback, 1, exit_no);
+	t->context.uc_link          = &t->destroy;
+	t->destroy.uc_stack.ss_sp   = t->stack;
+	t->destroy.uc_stack.ss_size = t->stack_size;
+	t->destroy.uc_link          = 0;
+	makecontext(&t->destroy, destroy_callback, 0);
+	/* this is so messy; makecontext is prototyped incorrectly; it should be
+	 (void (*)())) */
+	makecontext(&t->context, (void (*)(void))func, 1, arg);
 
-#if 0 /* jit; pushed to ThreadsRun */
-	/*t->context.uc_link = getcontext();*/ /* setcontext(ucp->uc_link) is implicitly invoked.*/
-	if(getcontext(&context) == -1) {
-		perror("Threads::create");
-		free(t);
-		return 0;
-	}
-	makecontext(&context, func, 0/*2, (int)t, (int)arg <- ?*/);
-#endif
+	if((t->next = threads->first_running)) t->next->prev = t;
+	threads->first_running = t;
 
-	t->next               = threads->first_active;
-	threads->first_active = t;
+	fprintf(stderr, "Thread: new, \"%s\" #%p (#%p next #%p.)\n", name, (void *)t, (void *)&t->context, (void *)t->context.uc_link);
 
-	fprintf(stderr, "Thread: new, \"%s\" (exit %d) #%p.\n", name, exit_no++, (void *)t);
-
-	return 0;
+	return t;
 }
 
-/** "This function is called at the end of the function that was invoked by the
- thread. This function will remove the thread from the runqueue (i.e., the
- thread does not need to run any more). However, the entry in the thread
- control block table could be still left in there. However, the state of the
- thread control block entry should be set to an EXIT state."
- @depreciated t       the thread to exit
- @param       exit_no the argument of the function */
-void ThreadsExit(const int exit_no/*struct Thread *t*/) {
-	struct Thread *prev, *thiz;
+/** "The runthreads() switches control from the main thread to one of the
+ threads in the runqueue."
+ @return true if there are threads which are waiting */
+int ThreadsRun(void) {
+	struct Thread *t, *next, *new;
+
+	/* we have at least one thread */
+	if(!threads || !(t = threads->first_running)) return 0;
+
+	/* pick off the exited threads */
+	fprintf(stderr, "Threads::run: list ");
+	do {
+		fprintf(stderr, "<%s:%s>", t->name, t->run == R_RUNNING ? "running" : "cleanup");
+		next = t->next;
+		if(t->run == R_RUNNING) continue;
+		/* remove */
+		if(threads->first_running == t) threads->first_running = t->next;
+		if(t->prev) t->prev->next = t->next;
+		if(t->next) t->next->prev = t->prev;
+		/* insert */
+		t->prev = 0;
+		if((t->next = threads->first_exit)) t->next->prev = t;
+		threads->first_exit = t;
+	} while((t = next));
+	fprintf(stderr, ".\n");
+
+	/* cleanup has not got any threads left? */
+	if(!(threads->first_running)) return 0;
+
+	/* set up sigaction and timer */
+	if(sigaction(SIGALRM, &threads->action, &threads->old_action) == -1
+	   || setitimer(ITIMER_REAL, &threads->timer, &threads->old_timer) == -1) {
+		perror("Threads::run");
+		abort(); /* fixme: undo? */
+	}
+
+	/* the swap function timer_callback, restores the context upon exiting */
+	new = threads->active = threads->first_running;
+	fprintf(stderr, "Threads::run: swap(%s, %s#%p).\n", "parent", new->name, (void *)new);
+	swapcontext(&threads->this_context, &new->context);
+
+	return -1;
+}
+
+/** "the state of the thread control block entry should be set to an EXIT
+ state." This basically force-exits. Note: allowing threads to exit gracefully
+ is okay
+ @param       the thread */
+void ThreadsExit(struct Thread *t/*exit*/) {
+	/*struct Thread *prev, *thiz;*/
 
 	if(!threads) return;
-
+#if 0 /* singly linked list: more stable (haven't work out bugs,) but slower, O(n) vs O(1) */
 	/* set up thiz and prev */
-	for(thiz = threads->first_active, prev = 0;
-		thiz; prev = thiz, thiz = thiz->next) if(exit_no == thiz->exit_no) break;
+	for(thiz = threads->first_running, prev = 0; thiz; prev = thiz, thiz = thiz->next) {
+		if(thiz == exit) break;
+	}
 	if(!thiz) {
-		fprintf(stderr, "Threads::exit: %d does not match any exit number in the active queue; ignoring.\n", exit_no/*(void *)t*/);
+		fprintf(stderr, "Threads::exit: #%p does not match any in the active queue; ignoring.\n", (void *)exit);
 		return;
 	}
 	/* remove t from active list */
-	if(prev) prev->next            = thiz->next;
-	else     threads->first_active = thiz->next;
+	if(prev) prev->next             = thiz->next;
+	else     threads->first_running = thiz->next;
 	/* insert t to the exit list */
 	thiz->next          = threads->first_exit;
 	threads->first_exit = thiz;
-
-	fprintf(stderr, "Threads::exit: (exit %d) #%p has exited.\n", exit_no, (void *)thiz);
-}
-
-/** "In MyThreads, threads are created by the mythread_create() function. The
- mythread_create() function needs to be executed by the main thread (the
- default thread of process – the one running before MyThreads created any
- threads). Even after all threads are created, the main thread will still keep
- running. To actually run the threads, you need to run the runthreads(). The
- runthreads() switches control from the main thread to one of the threads in
- the runqueue.
- 
- "In addition to switching over to the threads in the runqueue, the
- runthreads() function activates the thread switcher. The thread switcher is an
- interval timer that triggers context switches every quantum nanoseconds." */
-void ThreadsRun(void) {
-	struct Thread *t;
-
-	for(t = threads->first_active; t; t = t->next) {
-		struct sigaction act;
-		struct itimerval new;
-
-		act.sa_handler = &callback;
-		act.sa_mask    = 0; /* "the signal which triggered the handler will be
-							 blocked, unless the SA_NODEFER flag is used" */
-		act.sa_flags   = 0; /* SA_ONSTACK? */
-		if(sigaction(SIGALRM, &act, 0) == -1) {
-			perror("Threads::run");
-			break;
-		}
-		/* lol, "When not using sigaction things get even uglier . . . " */
-		new.it_interval.tv_usec = threads->us;
-		new.it_interval.tv_sec  = 0;
-		new.it_value.tv_usec    = 0;
-		new.it_value.tv_sec     = 0;
-		setitimer(ITIMER_REAL, &new, 0);
-
-		/*next = t->next ? t->next : 0;*/
-		/*t->uc_link*/
-
-#if 0 /* we don't need to do this because sigaction "the signal which triggered
-the handler will be blocked, unless the SA_NODEFER flag is used" -- (probably
-system-dependant, wouldn't trust this posix) */
-		sigset_t sset, oldset;
-
-		/* initialise */
-		sigemptyset(&sset);
-		sigaddset(&sset, SIGALRM);
-
-		/* block SIGALRM */
-		sigprocmask(SIG_BLOCK, &sset, &oldset);
-
-		/* unblock */
-		sigprocmask(SIG_SETMASK, &oldset, 0);
+#else
+	if(threads->active) {
+		fprintf(stderr, "Threads::exit: called when Threads::run active. Ignored.\n");
+		return;
+	}
+	/* remove */
+	if(     threads->first_running == t) threads->first_running = t->next;
+	else if(threads->first_blocked == t) threads->first_blocked = t->next;
+	else if(threads->first_exit    == t) return;
+	if(t->prev) t->prev->next = t->next;
+	if(t->next) t->next->prev = t->prev;
+	/* insert */
+	t->prev = 0;
+	t->next = threads->first_exit;
+	t->next->prev = threads->first_exit = t;
 #endif
 
-	}
+	fprintf(stderr, "Threads::exit: #%p has (force) exited.\n", (void *)t);
 }
 
 /** "This function creates a semaphore and sets its initial value to the given
- parameter. The mythread_init() function would have initialized the semaphores
- table and set the total number of active semaphore count to zero. You insert
- an entry into this table. Each entry of this table will be a structure that
- defines the complete state of the semaphore. It should also have a queue to
- hold the threads that will be waiting on the semaphore."
+ parameter."
  @param value semaphore value >= 0
- @return semaphore
- */
+ @return semaphore */
 struct Semaphore *ThreadsSemaphore(const int value) {
-	return 0;
+	struct Semaphore *s;
+	/*sigset_t sset, oldset;*/
+
+	if(!threads || value < 0) {
+		fprintf(stderr, "Threads::semaphore: invalid.\n");
+		return 0;
+	}
+
+	/* block SIGALRM while making a change to the semaphores */
+	/* (not needed, initialisation occurs outside of Threads::run)
+	 if(sigemptyset(&sset) == -1
+	   || sigaddset(&sset, SIGALRM) == -1
+	   || sigprocmask(SIG_BLOCK, &sset, &oldset) == -1) {
+		perror("Threads::Semaphore hide");
+		return 0;
+	}*/
+
+	if(!(s = malloc(sizeof(struct Semaphore)))) {
+		perror("Thread::semaphore constructor");
+		return 0;
+	}
+	s->next          = threads->first_semaphore;
+	s->prev          = 0;
+	s->count = s->count_start = value;
+	s->first_waiting = 0;
+
+	if(threads->first_semaphore) threads->first_semaphore->prev = s;
+	threads->first_semaphore = s;
+
+	/* unblock SIGALRM */
+	/*if(sigprocmask(SIG_SETMASK, &oldset, 0) == -1) {
+		perror("Threads::Semaphore::down reset");
+	}*/
+
+	fprintf(stderr, "Thread::semaphore: new %d, #%p\n", value, (void *)s);
+
+	return s;
 }
 
 /** "void destroy_semaphore(int semaphore); This function removes a semaphore
@@ -298,10 +319,38 @@ struct Semaphore *ThreadsSemaphore(const int value) {
  semaphore should fail. That is the removal process should fail with an
  appropriate error message. If there are no threads waiting, this function will
  proceed with the removal after checking whether the current value is the same
- as the initial value of the semaphore. If the values are different, then a
- warning message is printed before the semaphore is destroyed." */
+ as the initial value of the semaphore." */
 void ThreadsSemaphore_(struct Semaphore **sptr) {
+	struct Semaphore *s;
+	/*sigset_t sset, oldset;*/
+
+	if(!sptr || !(s = *sptr)) return;
+
+	/* block SIGALRM while reading from the semaphores */
+	/*if(sigemptyset(&sset) == -1
+	   || sigaddset(&sset, SIGALRM) == -1
+	   || sigprocmask(SIG_BLOCK, &sset, &oldset) == -1) {
+		perror("Threads::~Semaphore hide");
+		return;
+	}*/
 	
+	if(s->first_waiting) {
+		fprintf(stderr, "Thread::~Semaphore: #%p had threads waiting, cannot erase.\n", (void *)s);
+		return;
+	}
+
+	if(threads->first_semaphore == s) threads->first_semaphore = s->next;
+	if(s->prev) s->prev->next = s->next;
+	if(s->next) s->next->prev = s->prev;
+
+	fprintf(stderr, "Thread::~Semaphore: erase %d (was %d,) #%p\n", s->count, s->count_start, (void *)s);
+	free(s);
+	*sptr = s = 0;
+
+	/* unblock SIGALRM */
+	/*if(sigprocmask(SIG_SETMASK, &oldset, 0) == -1) {
+		perror("Threads::Semaphore::down reset");
+	}*/
 }
 
 /** "When a thread calls this function, the value of the semaphore is
@@ -310,12 +359,52 @@ void ThreadsSemaphore_(struct Semaphore **sptr) {
  semaphore goes below 0."
  @param s a valid semaphore */
 void ThreadsSemaphoreDown(struct Semaphore *s) {
-	if(!s || !s->thread /*|| !s->thread->status == */);
-	s->count--;
-	if(s->count < 0) {
-		/* enqueue(s-­>queue, CurrentThread);
-		 thread_switch(); */
+	struct Thread *act/*, *thiz, *last = 0*/;
+	sigset_t sset, oldset;
+
+	if(!s || !(act = threads->active)) return;
+
+	/* block SIGALRM */
+	if(sigemptyset(&sset) == -1
+	   || sigaddset(&sset, SIGALRM) == -1
+	   || sigprocmask(SIG_BLOCK, &sset, &oldset) == -1) {
+		perror("Threads::Semaphore::down hide");
+		return;
 	}
+
+	s->count--;
+	fprintf(stderr, "Threads::Semaphore::down: <%s> with %d < 0 ? %s.\n", act->name, s->count, s->count < 0 ? "true" : "false");
+	if(s->count < 0) {
+		/* enqueue(s->queue, CurrentThread); switch the lists */
+#if 0
+		for(thiz = threads->first_running; thiz && thiz != act; last = thiz, thiz = thiz->next);
+		if(!thiz) return; /* should not happen! encasulation */
+		if(last) {
+			last->next = thiz->next;
+		} else {
+			threads->first_running = thiz->next;
+		}
+		thiz->next = s->first_waiting;
+		s->first_waiting = thiz;
+#else
+		if(threads->first_running == act) threads->first_running = act->next;
+		if(act->prev) act->prev->next = act->next;
+		if(act->next) act->next->prev = act->prev;
+		/* insert in waiting */
+		act->prev = 0;
+		act->next = threads->first_blocked;
+		act->next->prev = threads->first_blocked = act;
+#endif
+	}
+
+	/* unblock SIGALRM */
+	if(sigprocmask(SIG_SETMASK, &oldset, 0) == -1) {
+		perror("Threads::Semaphore::down reset");
+	}
+
+	/* switch threads right now by explicity;
+	 fixme: reset the timer for a new quantum! */
+	if(s->count < 0) timer_callback(-1);
 }
 
 /** "When a thread calls this function, the value of the semaphore is
@@ -325,26 +414,45 @@ void ThreadsSemaphoreDown(struct Semaphore *s) {
  The state of the thread is changed to RUNNABLE."
  @param s a valid semaphore */
 void ThreadsSemaphoreUp(struct Semaphore *s) {
+	struct Thread *torun;
+	sigset_t sset, oldset;
+
+	/* block SIGALRM */
+	if(sigemptyset(&sset) == -1
+	   || sigaddset(&sset, SIGALRM) == -1
+	   || sigprocmask(SIG_BLOCK, &sset, &oldset) == -1) {
+		perror("Threads::Semaphore::up hide");
+		return;
+	}
+
 	s->count++;
-	if(s->count <= 0) {
-		/*enqueue(runqueue, dequeue(s-­‐>queue)); */
+	fprintf(stderr, "Threads::Semaphore::up: %d.\n", s->count);
+	if(s->count >= 0 && (torun = s->first_waiting)) {
+		/*enqueue(runqueue, dequeue(s-­‐>queue)); put a thread on running */
+		/* this is a weak semaphore, ie, not fifo, actually stack */
+#if 0
+		s->first_waiting = torun->next;
+		torun->next = threads->first_running;
+		threads->first_running = torun;
+#else
+		if((s->first_waiting = torun->next)) torun->next->prev = 0;
+		if((torun->next = threads->first_running)) torun->next->prev = torun;
+		threads->first_running = torun;
+#endif
+		fprintf(stderr, "Threads::Semaphore::down: freeing <%s>.\n", torun->name);
+	}
+
+	/* unblock SIGALRM */
+	if(sigprocmask(SIG_SETMASK, &oldset, 0) == -1) {
+		perror("Threads::Semaphore::down reset");
 	}
 }
-
-/* "MyThreads has preemptive multithreading, which is implemented through
- signal based interrupts. You need to block the signals (more on the exact
- signal to block later) while manipulating the semaphore internal parameters.
- Remember to enable the signal based interrupts as soon as possible. Otherwise,
- the multithreading process will stop working!
- "Notice that the semaphore is denoted by an integer. It is actually an index
- into the active semaphore table maintained by the MyThreads library. The
- semaphore_wait() function needs to access the record corresponding to the
- given semaphore and then manipulate its contents." */
 
 /** "void mythread_state(); This function prints the state of all threads that
  are maintained by the library at any given time. For each thread, it prints
  the following information in a tabular form: thread name, thread state (print
- as a string RUNNING, BLOCKED, EXIT, etc), and amount of time run on CPU." */
+ as a string RUNNING, BLOCKED, EXIT, etc), and amount of time run on CPU."
+ @param out the stream that it's printed on */
 void ThreadsPrintState(FILE *out) {
 	struct Thread *t;
 	int fl, file;
@@ -372,26 +480,30 @@ void ThreadsPrintState(FILE *out) {
 		return;
 	}
 	fprintf(out, "unique address\tthread state\tcpu time\tname\n");
-	for(t = threads->first_active;  t; t = t->next) thread_print(out, t, "RUNNING");
+	for(t = threads->first_running; t; t = t->next) thread_print(out, t, "RUNNING");
 	for(t = threads->first_blocked; t; t = t->next) thread_print(out, t, "BLOCKED");
 	for(t = threads->first_exit;    t; t = t->next) thread_print(out, t, "EXITED");
 }
 
-/** "void set_quantum_size(int quantum); Sets the quantum size of the round
- robin scheduler. The round robin scheduler is pretty simple it just picks the
- next thread from the runqueue and appends the current to the end of the
- runqueue. Then it switches over to the new thread."
- @param ms the number of ms to run each thread */
+/** "Sets the quantum size of the round robin scheduler."
+ @param us the number of us to run each thread */
 void ThreadsSetQuantum(const int us) {
 	if(!threads || us <= 0) return;
-	threads->us = us;
+	/* { value, interval, interval, interval, ... } */
+	threads->timer.it_value.tv_usec    = us;
+	threads->timer.it_interval.tv_usec = us;
 }
 
-/** @return version * 100 + minor */
-int ThreadsGetVersion(void) { return versionMajor * 100 + versionMinor; }
+/** call this at your own risk */
+char *ThreadsDebug(void) {
+	static char buf[512];
+	struct Thread *t;
 
-/** prints useless stuff so I wouldn't get "defined but not used" */
-void ThreadsPrintInfo(void) { usage(); }
+	if(!threads) return "NoThreads";
+	if(!(t = threads->active)) return "NoActive";
+	sprintf(buf, "#%p<%s>", (void *)t, t->name);
+	return buf;
+}
 
 /* private */
 
@@ -401,14 +513,45 @@ static void thread_print(FILE *out, const struct Thread *t, const char *which) {
 }
 
 /** callback for switching threads */
-static void callback(int signal) {
-	printf("woo\n");
+static void timer_callback(int signal) {
+	struct Thread *old, *new;
+
+	/* fixme: this should never happen, but it happens all the time */
+	if(!(old = threads->active)) {
+		fprintf(stderr, "timer_callback: missing active context.\n");
+		return;
+	}
+	new = threads->active = old->next;
+	/*fprintf(stderr, " old #%p<%s> new #%p<%s>", (void *)old, old->name, (void *)new, new ? new->name : "(back)");*/
+	if(new) {
+		fprintf(stderr, "timer_callback: swap(%s, %s).\n", old->name, new->name);
+		swapcontext(&old->context, &new->context);
+	} else {
+		/* restore signal values set in ThreadsRun (hopefully!) */
+		/*printf("Threads::run: stopping timer.\n");*/
+
+		if(setitimer(ITIMER_REAL, &threads->old_timer, 0) == -1
+		   || sigaction(SIGALRM, &threads->old_action, 0) == -1) {
+			perror("Threads::run");
+			abort(); /* fixme */
+		}
+
+		fprintf(stderr, "timer_callback: swap(%s, %s).\n", old->name, "parent");
+		swapcontext(&old->context, &threads->this_context);
+	}
 }
 
-/** prints command-line help */
-static void usage(void) {
-	fprintf(stderr, "Usage: %s\n", programme);
-	fprintf(stderr, "Version %d.%d.\n\n", versionMajor, versionMinor);
-	fprintf(stderr, "%s %s Neil Edelman\n", programme, year);
-	fprintf(stderr, "This program comes with ABSOLUTELY NO WARRANTY.\n\n");
+/** callback for destroying a thread */
+static void destroy_callback(void) {
+	struct Thread *a;
+
+	if(!(a = threads->active)) {
+		fprintf(stderr, "destroy_callback was called without an active thread (should not happen.)\n");
+		return;
+	}
+	a->run = R_EXIT;
+	for( ; ; ) {
+		fprintf(stderr, "destory_callback: <%s> chilling on run queue.\n", a->name);
+		sleep(1);
+	}
 }

@@ -8,14 +8,15 @@ SDIR  := src
 BDIR  := bin
 BACK  := backup
 ICON  := #icon.ico
-EXTRA := # $(SDIR)/icon.rc
+EXTRA := $(SDIR)/Collatz.c $(SDIR)/Collatz.h # $(SDIR)/icon.rc
 INST  := $(PROJ)-$(VA)_$(VB)
 OBJS  := $(patsubst %,$(BDIR)/%.o,$(FILES)) # or $(patsubst %,$(BDIR)/%.class,$(FILES))
 SRCS  := $(patsubst %,$(SDIR)/%.c,$(FILES)) # or $(patsubst %,$(SDIR)/%.java,$(FILES))
 H     := $(patsubst %,$(SDIR)/%.h,$(FILES))
 
 CC   := gcc # /usr/local/i386-mingw32-4.3.0/bin/i386-mingw32-gcc javac nxjc
-CF   := -Wall -O3 -fasm -fomit-frame-pointer -ffast-math -funroll-loops -pedantic -std=c99 -D _XOPEN_SOURCE # -ansi -mwindows or -g:none -O -verbose -d $(BDIR) $(SDIR)/*.java -Xlint:unchecked -Xlint:deprecation
+CF   := -Wall -O3 -fasm -fomit-frame-pointer -ffast-math -funroll-loops -pedantic
+# -std=c99 -D _XOPEN_SOURCE -D _POSIX_SOURCE # -ansi -mwindows or -g:none -O -verbose -d $(BDIR) $(SDIR)/*.java -Xlint:unchecked -Xlint:deprecation
 OF   := # -framework OpenGL -framework GLUT
 
 default: $(BDIR)/$(PROJ)
