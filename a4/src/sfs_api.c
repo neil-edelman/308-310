@@ -1,4 +1,15 @@
-/* This is the simple file system used with disk_emu.c, etc; COMP-310
+/* This is the simple file system used with disk_emu.c, etc; COMP-310.
+ 
+ "The very first block is always the super block. This block will hold the
+ number of blocks for the root directory (only one level directory here),
+ number of blocks for the FAT, and the number of data blocks, and number of
+ free blocks."
+ 
+ Simulated file system using a file that is 'block_size * no_blocks' bits long.
+ 
+ The file pointers are 
+ The first block has a file pointer
+ 
  @author Neil
  @version 1
  @since 2014 */
@@ -6,21 +17,27 @@
 #include <stdlib.h> /* malloc free bsearch */
 #include <stdio.h>  /* fprintf EOF */
 #include <string.h> /* strcmp memset */
+#include <stdint.h> /* C99 */
 #include "disk_emu.h"
 #include "sfs_api.h"
 
 /* private */
 
-typedef int SpaceIndex;
-typedef int BlockIndex;
+typedef uint16_t FilePointer;
+static const int fp_size = sizeof(FilePointer);
 
 typedef struct { char data[512]; } Block;
 static const int block_size = sizeof(Block) / sizeof(char);
 static const int block_bits = (sizeof(Block) / sizeof(char)) << 3;
 
+#define NO_BLOCKS (256) /* used in two initialisations */
+/* how big the is file on disk: no_blocks * block_size bytes; bit vector bytes */
+static const int    no_blocks = NO_BLOCKS;
+static const int no_blocks_hi = (NO_BLOCKS >> 3) + ((NO_BLOCKS & 0xFF) ? 1 : 0);
+
 /* an entry in the file allocation table */
 struct Fat {
-	BlockIndex block;
+	char *block;
 	struct Fat *next;
 };
 
@@ -28,7 +45,7 @@ struct Fat {
 struct File {
 	char       isOpen;
 	char       name[13]; /* [MAX_FNAME_LENGTH]; sizeof(8 + '.' + 3 + '\0') = 13 */
-	SpaceIndex size;
+	int        size;
 	struct Fat *start;
 };
 static const int filename_size = sizeof((struct File *)0)->name / sizeof(char);
@@ -70,10 +87,7 @@ static const struct PrintError {
 };
 enum SfsError sfs_errno = ERR_NO;
 
-#define NO_BLOCKS (256) /* used in two initialisations; isn't used elsewhere */
 static const char   *diskname = "foo";
-static const int    no_blocks = NO_BLOCKS; /* how big the is the actual file on disk */
-static const int no_blocks_hi = (NO_BLOCKS >> 3) + ((NO_BLOCKS & 0xFF) ? 1 : 0);
 static const int      verbose = -1; /* error checking in the supplied programmes
 									is non-existant; we have to do it here */
 
