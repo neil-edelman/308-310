@@ -17,34 +17,42 @@
 #include <stdlib.h> /* malloc free bsearch */
 #include <stdio.h>  /* fprintf EOF */
 #include <string.h> /* strcmp memset */
-#include <stdint.h> /* C99 */
+#include <stdint.h> /* uint16_t (C99) */
 #include "disk_emu.h"
 #include "sfs_api.h"
 
 /* private */
 
+/* versions of "hard disks" (files on disk) have a specific fp_size, block_size,
+ and no_blocks: if you change these, you must start again with a new disk */
+
+/* index to a spot on the disk */
 typedef uint16_t FilePointer;
 static const int fp_size = sizeof(FilePointer);
 
-typedef struct { char data[512]; } Block;
+/* block size */
+typedef struct { char data[256]; } Block;
 static const int block_size = sizeof(Block) / sizeof(char);
 static const int block_bits = (sizeof(Block) / sizeof(char)) << 3;
 
-#define NO_BLOCKS (256) /* ahhh, hate #defines but used in two initialisations */
-/* how big the is file on disk: no_blocks * block_size bytes; bit vector bytes */
+/* how big the is the disk: no_blocks * block_size bytes; bit vector bytes */
+#define NO_BLOCKS (256) /* #define used in two initialisations */
 static const int    no_blocks = NO_BLOCKS;
-static const int no_blocks_hi = (NO_BLOCKS >> 3) + ((NO_BLOCKS & 0xFF) ? 1 : 0);
+static const int no_blocks_bv = (NO_BLOCKS >> 3) + ((NO_BLOCKS & 0xFF) ? 1 : 0);
 
 /* an entry in the file allocation table */
 struct Fat {
-	char *block;
+	char *block; /* viz, block[block_size] */
 	struct Fat *next;
 };
+
+#define FILENAME_SIZE 13 /* #define used in two initialisations;
+                          [MAX_FNAME_LENGTH]; sizeof(8 + '.' + 3 + '\0') = 13 */
 
 /* a file on disk */
 struct File {
 	char       isOpen;
-	char       name[13]; /* [MAX_FNAME_LENGTH]; sizeof(8 + '.' + 3 + '\0') = 13 */
+	char       name[FILENAME_SIZE];
 	int        size;
 	struct Fat *start;
 };
@@ -54,7 +62,7 @@ static const int filename_size = sizeof((struct File *)0)->name / sizeof(char);
 struct OpenFile {
 	int         id; /* constant */
 	int         inUse;
-	char        name[13]; /* a key: copied of File::name */
+	char        name[FILENAME_SIZE]; /* a unique key (in practice, copy of File::name) */
 	struct File *file;
 };
 
@@ -63,8 +71,16 @@ struct OpenFile {
  the root directory (only one level directory here), number of blocks for the
  FAT, and the number of data blocks, and number of free blocks." */
 struct Sfs {
+	/* this is read from the disk: since the root is the only directory, I'm
+	 making a simplifying assumption and combining it with the FAT; also, when
+	 the assignment says "number of blocks for the FAT," I assume it means a
+	 pointer to the FAT, etc. */
+	FilePointer disk_fat;
+	FilePointer disk_free;
+	/* to compute this in the memory */
 	struct Fat *fat;
-	Block free;                 /* only one block, ("the free block list can be contained within a single block," thank you!) */
+	Block      free;            /* "the free block list can be contained within a single block," thank you! */
+	/* the files are entirely in memory */
 	int files_open;             /* keep track of actual files open */
 	struct OpenFile *open[128]; /* [MAX_FD]; to do the tests, >= 100 */
 	struct OpenFile *open_buffer;
@@ -98,7 +114,8 @@ static int openfile_cmp(const void *key, const void *elem);
 static int free_query(const Block *free, const int block);
 static int free_set(Block *free, const int block, const int isSet);
 static int free_search(Block *free);
-static void free_map(const Block *free);
+static void free_map(const Block *free, const char *pretty);
+static void block_map(const Block *b, const char *pretty);
 
 /* private; global variables automatically get initialised to zero */
 static struct Sfs  *sfs;
@@ -117,17 +134,18 @@ static struct File *file_index;
 	Boolean value; build up a new file system instead of loading one from disk.
  @return Non-zero on success, if 0, sets sfs_error. */
 int mksfs(const int fresh) {
+	Block b;
 	int (*disk)(char *, int, int) = fresh ? &init_fresh_disk : &init_disk;
 	int i;
 
-	if(block_size < no_blocks_hi) {
-		fprintf(stderr, "We need a minimum of %db to hold free space list, but that won't fit in block size %db.\n", no_blocks_hi, block_size);
+	if(block_size < no_blocks_bv) {
+		fprintf(stderr, "We need a minimum of %db to hold free space list, but that won't fit in block size %db.\n", no_blocks_bv, block_size);
 		exit(EXIT_FAILURE);
 	}
 
 	if(verbose) fprintf(stderr,
-						"block_size %d; block_bits %d; no_blocks %d; no_blocks_hi %d; mksfs(%d);\n",
-						block_size, block_bits, no_blocks, no_blocks_hi, fresh);
+						"block_size %d; block_bits %d; no_blocks %d; no_blocks_bv %d; mksfs(%d);\n",
+						block_size, block_bits, no_blocks, no_blocks_bv, fresh);
 
 	/* it's already loaded */
 	if(sfs) return -1;
@@ -139,6 +157,8 @@ int mksfs(const int fresh) {
 		rmsfs();
 		return 0;
 	}
+	sfs->disk_fat   = 0;
+	sfs->disk_free  = 0;
 	sfs->fat        = 0;
 	memset(&sfs->free, 0, block_size);
 	/* pre-allocate all the open files */
@@ -149,8 +169,8 @@ int mksfs(const int fresh) {
 		open->id    = i + 1;
 		open->inUse = 0;
 	}
-	/* fixme */
-	fprintf(stderr, "sfs->open[1] #%p = %d\n", (void *)sfs->open[1], sfs->open[1]->id);
+	/* fixme: just to test */
+	fprintf(stderr, "test sfs->open[1] #%p = %d\n", (void *)sfs->open[1], sfs->open[1]->id);
 
 	if(disk((char *)diskname, block_size, no_blocks) == -1) {
 		if(verbose) fprintf(stderr, "Sfs: shutting down because of disk error #%p.\n", (void *)sfs);
@@ -159,14 +179,18 @@ int mksfs(const int fresh) {
 		return 0;
 	}
 
-	/* always have the superblock set */
+	/* read in the superblock (0) */
+	read_blocks(0, 1, (void *)b.data);
+	block_map(&b, "read in block 0");
+
+	/* always have the superblock set, that's the one we're reading from */
 	if(!free_query(&sfs->free, 0)) free_set(&sfs->free, 0, -1);
 
 	free_set(&sfs->free, 15, -1);
 	free_set(&sfs->free, 7, -1);
 	free_set(&sfs->free, 8, -1);
 	free_set(&sfs->free, 15, -1);
-	free_map(&sfs->free);
+	free_map(&sfs->free, "blocks bv");
 	sfs->files_open = 2;
 	strcpy(sfs->open_buffer[0].name, "foo");
 	strcpy(sfs->open_buffer[1].name, "bar");
@@ -259,7 +283,7 @@ int sfs_fopen(const char *name) {
 
 	/* find a spot (eww!) */
 	for(i = 0; sfs->open[i]->inUse && (i < max_files_open); i++);
-	/* just paranoid; when this is mutiprogrammed, this actually could happen? */
+	/* just paranoid */
 	if(i >= max_files_open) {
 		fprintf(stderr, "sfs_fopen: discrepancy files_open %d but %d full.\n", sfs->files_open, max_files_open);
 		abort();
@@ -463,7 +487,7 @@ static int free_set(Block *free, const int block, const int isSet) {
 	int byte = block >> 3;
 	int bit  = 0x01 << (block & 0x07);
 
-	fprintf(stderr, "block %d, byte %d, bit %d\n", block, byte, block & 0x07);
+	/* debug: fprintf(stderr, "block %d, byte %d, bit %d\n", block, byte, block & 0x07); */
 	if(block >= no_blocks || block >= block_size) {
 		if(verbose) fprintf(stderr, "free: ERR_OUT_OF_BOUNDS.\n");
 		sfs_errno = ERR_OUT_OF_BOUNDS;
@@ -475,8 +499,10 @@ static int free_set(Block *free, const int block, const int isSet) {
 	}
 	if(isSet) {
 		fre[byte] |= bit;
+		if(verbose) fprintf(stderr, "freeset: set %d.\n", block);
 	} else {
 		fre[byte] &= ~bit;
+		if(verbose) fprintf(stderr, "freeset: cleared %d.\n", block);
 	}
 
 	return -1;
@@ -488,13 +514,29 @@ static int free_search(Block *free) {
 	return 0;
 }
 
-static void free_map(const Block *free) {
+static void free_map(const Block *free, const char *pretty) {
 	char *fre = (char *)free;
 	int i;
 	char b;
 
-	for(i = 0; i < no_blocks_hi; i++) {
-		for(b = 0x01; b; b <<= 1) fputc((fre[i] & b) ? '1' : '0', stderr);
+	fprintf(stderr, "free_map: %s,\n", pretty);
+	for(i = 0; i < no_blocks_bv; i++) {
+		for(b = 0x01; b; b <<= 1) {
+			fputc((fre[i] & b) ? '1' : '0', stderr);
+			fputc(' ', stderr);
+		}
 		fputc('\n', stderr);
 	}
+	fprintf(stderr, "(done.)\n");
+}
+
+static void block_map(const Block *b, const char *pretty) {
+	int i;
+
+	fprintf(stderr, "block_map: %s,\n", pretty);
+	for(i = 0; i < block_size; i++) {
+		fprintf(stderr, "%2.2X ", b->data[i]);
+		if((i & 0x0F) == 0x0F) fputc('\n', stderr);
+	}
+	fprintf(stderr, "(done.)\n");
 }
