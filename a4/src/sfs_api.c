@@ -134,18 +134,18 @@ static struct File *file_index;
 	Boolean value; build up a new file system instead of loading one from disk.
  @return Non-zero on success, if 0, sets sfs_error. */
 int mksfs(const int fresh) {
-	Block b;
+	Block b, *read;
 	int (*disk)(char *, int, int) = fresh ? &init_fresh_disk : &init_disk;
 	int i;
 
 	if(block_size < no_blocks_bv) {
-		fprintf(stderr, "We need a minimum of %db to hold free space list, but that won't fit in block size %db.\n", no_blocks_bv, block_size);
+		fprintf(stderr, "mksfs: we need a minimum of %db to hold free space list, but that won't fit in block size %db.\n", no_blocks_bv, block_size);
 		exit(EXIT_FAILURE);
 	}
 
 	if(verbose) fprintf(stderr,
-						"block_size %d; block_bits %d; no_blocks %d; no_blocks_bv %d; mksfs(%d);\n",
-						block_size, block_bits, no_blocks, no_blocks_bv, fresh);
+						"mksfs(%d:) block_size %d; block_bits %d; no_blocks %d; no_blocks_bv %d.\n",
+						fresh, block_size, block_bits, no_blocks, no_blocks_bv);
 
 	/* it's already loaded */
 	if(sfs) return -1;
@@ -180,16 +180,27 @@ int mksfs(const int fresh) {
 	}
 
 	/* read in the superblock (0) */
-	read_blocks(0, 1, (void *)b.data);
+	if(read_blocks(0, 1, (void *)b.data) != 1) {
+		fprintf(stderr, "mksfs: couldn't read superblock.\n");
+		sfs_errno = ERR_DISK;
+		rmsfs();
+		return 0;
+	}
 	block_map(&b, "read in block 0");
 
-	/* always have the superblock set, that's the one we're reading from */
-	if(!free_query(&sfs->free, 0)) free_set(&sfs->free, 0, -1);
+	/* do the conversion to memory (THIS DEPENDS ON ENDIANESS FOR SPEED!) */
+	read = &b;
+	((char *)read)[0] = 3;
+	((char *)read)[2] = 45;
+	block_map(&b, "now 0");
+	sfs->disk_fat = *(((FilePointer *)read)++);
+	sfs->disk_free = *(((FilePointer *)read)++);
+	
+	
+	
+	fprintf(stderr, " ***** %d, %d\n", sfs->disk_fat, sfs->disk_free);
 
-	free_set(&sfs->free, 15, -1);
-	free_set(&sfs->free, 7, -1);
-	free_set(&sfs->free, 8, -1);
-	free_set(&sfs->free, 15, -1);
+	if(!free_query(&sfs->free, 0)) free_set(&sfs->free, 0, -1);
 	free_map(&sfs->free, "blocks bv");
 	sfs->files_open = 2;
 	strcpy(sfs->open_buffer[0].name, "foo");
