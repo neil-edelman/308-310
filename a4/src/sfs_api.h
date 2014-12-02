@@ -10,7 +10,7 @@ int sfs_fseek(const int fileID, const int offset);
 int sfs_remove(const char *file);
 
 /* dirent -Neil */
-struct sfs_dirent *readdir(void);
+struct File *readdir(void);
 void rewinddir(void);
 
 /* errno -Neil */
@@ -20,6 +20,7 @@ extern enum SfsError {
 	ERR_OUT_OF_BOUNDS,
 	ERR_MALLOC,
 	ERR_DISK,
+	ERR_OPEN,
 	ERR_NOFRESH,
 	ERR_MAX_FILES,
 	ERR_WTF

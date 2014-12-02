@@ -179,6 +179,7 @@ main(int argc, char **argv)
         printf("After deleting file %s:\n", names[i]);
         sfs_ls();
     }
+#if 0
 
     /* Now try to close and delete the closed and deleted files. Don't
      * care about the return codes, really, but just want to make sure
@@ -329,6 +330,7 @@ main(int argc, char **argv)
 		}
 	}
 
+#endif
     /*//free(buffer)*/
 	
     fprintf(stderr, "Test program exiting with %d errors\n", error_count);

@@ -5,23 +5,56 @@
 
 #include <stdlib.h> /* malloc free bsearch */
 #include <stdio.h>  /* fprintf EOF */
+#include <string.h> /* strcmp memset */
 #include "disk_emu.h"
 #include "sfs_api.h"
 
-struct OpenFile {
-	/* int no; *//* descriptor is too hard to spell; now it's an index */
-	int inUse;
-	/* ect */
+/* private */
+
+typedef int SpaceIndex;
+typedef int BlockIndex;
+
+/* fixme: error: expected identifier or ‘(’ before ‘[’ token?
+typedef char[512] Block;*/
+typedef struct { char data[512]; } Block;
+static const int block_size = sizeof(Block) / sizeof(char);
+static const int block_bits = (sizeof(Block) / sizeof(char)) << 3;
+
+/* an entry in the file allocation table */
+struct Fat {
+	BlockIndex block;
+	struct Fat *next;
 };
 
+/* a file on disk */
+struct File {
+	char       isOpen;
+	char       name[13]; /* [MAX_FNAME_LENGTH]; sizeof(8 + '.' + 3 + '\0') = 13 */
+	SpaceIndex size;
+	struct Fat *start;
+};
+static const int filename_size = sizeof((struct File *)0)->name / sizeof(char);
+
+/* an open file in memory, viz file pointer, (FILE *) */
+struct OpenFile {
+	int         id; /* constant */
+	int         inUse;
+	char        name[13]; /* a key: copied of File::name */
+	struct File *file;
+};
+
+/* the entire file system */
+#define MAX_OPEN_FILES (128)    /* [MAX_FD]; to do the tests, >= 100 */
 struct Sfs {
-	/*int last_file_no;*/
-	int files_open;
-	struct OpenFile *file[128]; /* [MAX_FD], to do the tests, >= 100 */
+	struct Fat *fat;
+	Block free;                 /* only one block, ("the free block list can be contained within a single block," thank you!) */
+	int files_open;             /* keep track of actual files open */
+	struct OpenFile *file[MAX_OPEN_FILES];
+	struct OpenFile file_buffer[MAX_OPEN_FILES];
 };
 static const int max_files_open = sizeof((struct Sfs *)0)->file / sizeof(struct OpenFile *);
 
-/* for sfs errno */
+/* for looking up errors */
 static const struct PrintError {
 	enum SfsError key;
 	char *why;
@@ -32,23 +65,27 @@ static const struct PrintError {
 	{ ERR_DISK,     "disk error" },
 	{ ERR_MAX_FILES,"files open limit reached" },
 	{ ERR_OUT_OF_BOUNDS, "out of bounds" },
+	{ ERR_OPEN,     "opened already" },
 	{ ERR_WTF,      "error" }
 };
 enum SfsError sfs_errno = ERR_NO;
-struct sfs_dirent {
-	char d_name[13]; /* [MAX_FNAME_LENGTH] */
-};
-static const int filename_size = sizeof((struct sfs_dirent *)0)->d_name / sizeof(char);
 
-static const char *diskname  = "foo";
-static const int  block_size = 512;
-static const int   no_blocks = 8;
-static const int     verbose = -1; /* error checking in the supplied programmes is non-existant; we have to do it here */
+#define NO_BLOCKS (256)
+static const char   *diskname = "foo";
+static const int    no_blocks = NO_BLOCKS; /* how big the is the actual file on disk */
+static const int no_blocks_hi = (NO_BLOCKS >> 3) + ((NO_BLOCKS & 0xFF) ? 1 : 0);
+static const int      verbose = -1; /* error checking in the supplied programmes
+									is non-existant; we have to do it here */
 
-/* private */
-static int err_comp(const void *key, const void *elem);
+/* private fuctions */
+static int err_cmp(const void *key, const void *elem);
+static int openfile_cmp(const void *key, const void *elem);
+static int freeset(Block *free, const int block, const int isSet);
+static void freemap(const Block *free);
 
-static struct Sfs *sfs = 0;
+/* private; global variables automatically get initialised to zero */
+static struct Sfs  *sfs;
+static struct File *file_index;
 
 /* public */
 
@@ -63,51 +100,86 @@ static struct Sfs *sfs = 0;
 	Boolean value; build up a new file system instead of loading one from disk.
  @return Non-zero on success, if 0, sets sfs_error. */
 int mksfs(const int fresh) {
-	struct OpenFile *magic;
 	int (*disk)(char *, int, int) = fresh ? &init_fresh_disk : &init_disk;
 	int i;
+
+	if(block_size < no_blocks_hi) {
+		fprintf(stderr, "We need %db to hold data but the maximum block size is %db.\n", no_blocks_hi, block_size);
+		abort();
+	}
+
+	if(verbose) fprintf(stderr,
+						"block_size %d; block_bits %d; no_blocks %d; no_blocks_hi %d; mksfs(%d);\n",
+						block_size, block_bits, no_blocks, no_blocks_hi, fresh);
 
 	/* it's already loaded */
 	if(sfs) return -1;
 
-	if(!(sfs = malloc(sizeof(struct Sfs) + max_files_open * sizeof(struct OpenFile)))) {
-		perror("Sfs constructor");
+	/* allocate and fill with defaults */
+	if(!(sfs = malloc(sizeof(struct Sfs) /*+ max_files_open * sizeof(struct OpenFile)*/ ))) {
+		if(verbose) perror("Sfs constructor");
 		sfs_errno = ERR_MALLOC;
 		rmsfs();
 		return 0;
 	}
-	sfs->files_open   = 0;
-	magic = (struct OpenFile *)(sfs + 1);
+	sfs->fat        = 0;
+	memset(&sfs->free, 0, block_size);
+	sfs->files_open = 0;
+	/*magic = (struct OpenFile *)(sfs + 1);*/
 	for(i = 0; i < max_files_open; i++) {
-		struct OpenFile *file = sfs->file[i] = &magic[i];
+		struct OpenFile *file = &sfs->file_buffer[i]/*sfs->file[i] = &magic[i]*/;
+		file->id    = i + 1;
 		file->inUse = 0;
 	}
 
 	if(disk((char *)diskname, block_size, no_blocks) == -1) {
-		fprintf(stderr, "Sfs: shutting down because of disk error #%p.\n", (void *)sfs);
+		if(verbose) fprintf(stderr, "Sfs: shutting down because of disk error #%p.\n", (void *)sfs);
 		sfs_errno = ERR_DISK;
 		rmsfs();
 		return 0;
 	}
 
+	/* always have the superblock set */
+	freeset(&sfs->free, 0, -1);
+
+	
+	freeset(&sfs->free, 15, -1);
+	freeset(&sfs->free, 7, -1);
+	freeset(&sfs->free, 8, -1);
+	freeset(&sfs->free, 15, -1);
+	freemap(&sfs->free);
+	sfs->files_open = 2;
+	strcpy(sfs->file_buffer[0].name, "foo");
+	strcpy(sfs->file_buffer[1].name, "bar");
+	sfs->file[0] = &sfs->file_buffer[0];
+	sfs->file[1] = &sfs->file_buffer[1];
+	for(i = 0; i < sfs->files_open; i++) {
+		fprintf(stderr, "[%d] %s\n", sfs->file[i]->id, sfs->file[i]->name);
+	}
+	fprintf(stderr, "Sorting.\n");
+	qsort(sfs->file, sfs->files_open, sizeof(struct OpenFile *), &openfile_cmp);
+	for(i = 0; i < sfs->files_open; i++) {
+		fprintf(stderr, "[%d] %s\n", sfs->file[i]->id, sfs->file[i]->name);
+	}
+	
 	return -1;
 }
 
 /** Destructor. */
 void rmsfs(void) {
 	if(!sfs) return;
-	fprintf(stderr, "~Sfs: erase, #%p.\n", (void *)sfs);
+	if(verbose) fprintf(stderr, "~Sfs: erase, #%p.\n", (void *)sfs);
 	free(sfs);
 	sfs = 0;
 }
 
 /** Prints a list of the files to stdout. */
 void sfs_ls(void) {
-	struct sfs_dirent *d;
+	struct File *d;
 
 	if(!sfs) return;
 	while((d = readdir())) {
-		printf("%s\n", d->d_name);
+		printf("%d\t%s\t%s\n", d->size, d->isOpen ? "chilling" : "open", d->name);
 	}
 }
 
@@ -123,9 +195,10 @@ void sfs_ls(void) {
  object controlling the stream [in this case int]. Otherwise, a null pointer
  shall be returned [int 0], and errno shall be set to indicate the error." */
 int sfs_fopen(const char *name) {
-	struct OpenFile *file;
+	struct OpenFile *open, *already;
 	int i;
 
+	if(verbose) fprintf(stderr, "sfs_fopen(\"%s\");\n", name);
 	if(!sfs) {
 		if(verbose) fprintf(stderr, "sfs_fopen: ERR_NOT_INIT.\n");
 		sfs_errno = ERR_NOT_INIT;
@@ -136,19 +209,48 @@ int sfs_fopen(const char *name) {
 		return 0;
 	}
 
+	exit(0);
+	/* check wheather it's already an OpenFile */
+	already = bsearch(name,         /* key */
+					  sfs->file,    /* base, num, size */
+					  sfs->files_open,
+					  sizeof(struct File *),
+					  &openfile_cmp /* comparator */);
+	if(already) {
+		if(verbose) fprintf(stderr, "sfs_fopen: ERR_NOT_INIT.\n");
+		sfs_errno = ERR_OPEN;
+		return 0;
+	}
+
+	/* search the fat for the file */
+#if 0
+	already = bsearch(name,         /* key */
+					  sfs->fat,     /* base, num, size */
+					  sfs->files_open,
+					  sizeof(struct File *),
+					  &openfile_cmp /* comparator */);
+	if(already) {
+		fprintf(stderr, "******** Found %p.\n", (void *)already);
+		return 0;
+	}
+#endif
+
 	/* find a spot */
 	for(i = 0; (sfs->file[i])->inUse && (i < max_files_open); i++);
-	/* just paranoid but when this is mutiprogrammed, this actually could happen */
+	/* just paranoid; when this is mutiprogrammed, this actually could happen */
 	if(i >= max_files_open) {
 		fprintf(stderr, "sfs_fopen: discrepancy files_open %d but %d full.\n", sfs->files_open, max_files_open);
 		abort();
 	}
-	file = sfs->file[i];
-	file->inUse = -1;
+	open = sfs->file[i];
+	strncpy(open->name, already->name, filename_size - 1);
+	open->name[filename_size - 1] = '\0';
+	open->inUse = -1;
 	sfs->files_open++;
 
 	if(verbose) fprintf(stderr, "sfs_fopen: %s.\n", name);
 
+	exit(0);
 	return i + 1;
 }
 
@@ -248,7 +350,7 @@ int sfs_remove(const char *file) {
  shall be returned and errno shall be set to indicate the error. When the end
  of the directory is encountered, a null pointer shall be returned and errno is
  not changed." */
-struct sfs_dirent *readdir(void) {
+struct File *readdir(void) {
 	return 0;
 }
 
@@ -273,11 +375,11 @@ void rewinddir(void) {
 	The error.
  @return The error defined by errnum. */
 char *sfs_strerror(const int errnum) {
-	struct PrintError *e = bsearch(&errnum,  /* key */
-								   errors,   /* base, num, size */
+	struct PrintError *e = bsearch(&errnum, /* key */
+								   errors,  /* base, num, size */
 								   sizeof(errors) / sizeof(struct PrintError),
 								   sizeof(struct PrintError),
-								   &err_comp /* comparator */);
+								   &err_cmp /* comparator */);
 	return e ? e->why : "not a defined error";
 }
 
@@ -297,12 +399,44 @@ void sfs_perror(const char *s) {
 
 
 
-/** Compares the error to the table of errors.
- @peram key
-	The error that you want to find out.
- @param elem
-	The element in the PrintError errors.
- @return The difference. */
-static int err_comp(const void *key, const void *elem) {
+static int err_cmp(const void *key, const void *elem) {
 	return *(enum SfsError *)key - ((struct PrintError *)elem)->key;
+}
+
+static int openfile_cmp(const void *key, const void *elem) {
+	return strcmp(((struct OpenFile *)key)->name, ((struct OpenFile *)elem)->name);
+}
+
+static int freeset(Block *free, const int block, const int isSet) {
+	char *fre = (char *)free;
+	int byte = block >> 3;
+	int bit  = 0x01 << (block & 0x07);
+
+	fprintf(stderr, "block %d, byte %d, bit %d\n", block, byte, block & 0x07);
+	if(block >= no_blocks || block >= block_size) {
+		if(verbose) fprintf(stderr, "free: ERR_OUT_OF_BOUNDS.\n");
+		return 0;
+	}
+	if(verbose && (fre[byte] & bit) ? isSet : !isSet) {
+		fprintf(stderr, "freeset: warning bit is already changed.\n");
+		return -1;
+	}
+	if(isSet) {
+		fre[byte] |= bit;
+	} else {
+		fre[byte] &= ~bit;
+	}
+
+	return -1;
+}
+
+static void freemap(const Block *free) {
+	char *fre = (char *)free;
+	int i;
+	char b;
+
+	for(i = 0; i < no_blocks_hi; i++) {
+		for(b = 0x01; b; b <<= 1) fputc((fre[i] & b) ? '1' : '0', stderr);
+		fputc('\n', stderr);
+	}
 }
