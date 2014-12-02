@@ -17,7 +17,12 @@ void rewinddir(void);
 extern enum SfsError {
 	ERR_NO = 0,
 	ERR_NOT_INIT,
+	ERR_OUT_OF_BOUNDS,
 	ERR_MALLOC,
-	ERR_WTF } sfs_errno;
+	ERR_DISK,
+	ERR_NOFRESH,
+	ERR_MAX_FILES,
+	ERR_WTF
+} sfs_errno;
 char *sfs_strerror(const int errnum);
 void sfs_perror(const char *s);

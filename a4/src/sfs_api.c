@@ -9,30 +9,41 @@
 #include "sfs_api.h"
 
 struct OpenFile {
-	int desciptor;
+	/* int no; *//* descriptor is too hard to spell; now it's an index */
+	int inUse;
 	/* ect */
 };
 
 struct Sfs {
-	int var;
-	int lastFileDescriptor;
-	struct OpenFile file[2];
+	/*int last_file_no;*/
+	int files_open;
+	struct OpenFile *file[128]; /* [MAX_FD], to do the tests, >= 100 */
 };
-static const int openfile_size = sizeof((struct Sfs *)0)->file / sizeof(struct OpenFile);
+static const int max_files_open = sizeof((struct Sfs *)0)->file / sizeof(struct OpenFile *);
 
 /* for sfs errno */
 static const struct PrintError {
 	enum SfsError key;
 	char *why;
 } errors[] = {
-	{ ERR_NO,  "No error" },
-	{ ERR_WTF, "Error" }
+	{ ERR_NO,       "no error" },
+	{ ERR_NOT_INIT, "sfs not initialised" },
+	{ ERR_MALLOC,   "allocating space" },
+	{ ERR_DISK,     "disk error" },
+	{ ERR_MAX_FILES,"files open limit reached" },
+	{ ERR_OUT_OF_BOUNDS, "out of bounds" },
+	{ ERR_WTF,      "error" }
 };
 enum SfsError sfs_errno = ERR_NO;
 struct sfs_dirent {
-	char d_name[13];
+	char d_name[13]; /* [MAX_FNAME_LENGTH] */
 };
 static const int filename_size = sizeof((struct sfs_dirent *)0)->d_name / sizeof(char);
+
+static const char *diskname  = "foo";
+static const int  block_size = 512;
+static const int   no_blocks = 8;
+static const int     verbose = -1; /* error checking in the supplied programmes is non-existant; we have to do it here */
 
 /* private */
 static int err_comp(const void *key, const void *elem);
@@ -52,21 +63,29 @@ static struct Sfs *sfs = 0;
 	Boolean value; build up a new file system instead of loading one from disk.
  @return Non-zero on success, if 0, sets sfs_error. */
 int mksfs(const int fresh) {
+	struct OpenFile *magic;
+	int (*disk)(char *, int, int) = fresh ? &init_fresh_disk : &init_disk;
+	int i;
 
 	/* it's already loaded */
 	if(sfs) return -1;
 
-	if(!(sfs = malloc(sizeof(struct Sfs)))) {
+	if(!(sfs = malloc(sizeof(struct Sfs) + max_files_open * sizeof(struct OpenFile)))) {
 		perror("Sfs constructor");
 		sfs_errno = ERR_MALLOC;
 		rmsfs();
 		return 0;
 	}
-	sfs->var  = 0;
-	fprintf(stderr, "Sfs: new, #%p.\n", (void *)sfs);
-	if(0) {
-		fprintf(stderr, "Sfs: did something with #%p.\n", (void *)sfs);
-		sfs_errno = ERR_WTF;
+	sfs->files_open   = 0;
+	magic = (struct OpenFile *)(sfs + 1);
+	for(i = 0; i < max_files_open; i++) {
+		struct OpenFile *file = sfs->file[i] = &magic[i];
+		file->inUse = 0;
+	}
+
+	if(disk((char *)diskname, block_size, no_blocks) == -1) {
+		fprintf(stderr, "Sfs: shutting down because of disk error #%p.\n", (void *)sfs);
+		sfs_errno = ERR_DISK;
 		rmsfs();
 		return 0;
 	}
@@ -76,7 +95,6 @@ int mksfs(const int fresh) {
 
 /** Destructor. */
 void rmsfs(void) {
-
 	if(!sfs) return;
 	fprintf(stderr, "~Sfs: erase, #%p.\n", (void *)sfs);
 	free(sfs);
@@ -93,6 +111,10 @@ void sfs_ls(void) {
 	}
 }
 
+/* better to have the slow part on open
+ file = &((struct OpenFile *)(sfs + 1))[sfs->files_open++];
+ file->no = ++sfs->last_file_no;*/
+
 /** Opens a file. "The fopen() function shall open the file whose pathname is
  the string pointed to by filename, and associates a stream with it."
  @param name
@@ -101,12 +123,33 @@ void sfs_ls(void) {
  object controlling the stream [in this case int]. Otherwise, a null pointer
  shall be returned [int 0], and errno shall be set to indicate the error." */
 int sfs_fopen(const char *name) {
+	struct OpenFile *file;
+	int i;
+
 	if(!sfs) {
+		if(verbose) fprintf(stderr, "sfs_fopen: ERR_NOT_INIT.\n");
 		sfs_errno = ERR_NOT_INIT;
 		return 0;
+	} else if(sfs->files_open >= max_files_open) {
+		if(verbose) fprintf(stderr, "sfs_fopen: ERR_MAX_FILES.\n");
+		sfs_errno = ERR_MAX_FILES;
+		return 0;
 	}
-	sfs_errno = ERR_WTF;
-	return 0;
+
+	/* find a spot */
+	for(i = 0; (sfs->file[i])->inUse && (i < max_files_open); i++);
+	/* just paranoid but when this is mutiprogrammed, this actually could happen */
+	if(i >= max_files_open) {
+		fprintf(stderr, "sfs_fopen: discrepancy files_open %d but %d full.\n", sfs->files_open, max_files_open);
+		abort();
+	}
+	file = sfs->file[i];
+	file->inUse = -1;
+	sfs->files_open++;
+
+	if(verbose) fprintf(stderr, "sfs_fopen: %s.\n", name);
+
+	return i + 1;
 }
 
 /** Closes a file and returns the resouces. "The fclose() function shall cause
@@ -120,10 +163,19 @@ int sfs_fopen(const char *name) {
 	The file desciptor.
  @return "Upon successful completion, fclose() shall return 0; otherwise, it
  shall return EOF and set errno to indicate the error." */
-int sfs_fclose(const int fileID) {
-	if(!sfs) return -1;
-	sfs_errno = ERR_WTF;
-	return EOF;
+int sfs_fclose(const int id) {
+	if(!sfs) {
+		if(verbose) fprintf(stderr, "sfs_fopen: ERR_NOT_INIT.\n");
+		sfs_errno = ERR_NOT_INIT;
+		return EOF;
+	} else if(id <= 0 || max_files_open < id) {
+		if(verbose) fprintf(stderr, "sfs_fopen: ERR_OUT_OF_BOUNDS.\n");
+		sfs_errno = ERR_OUT_OF_BOUNDS;
+		return EOF;
+	}
+
+	sfs->file[id - 1]->inUse = 0;
+	return 0;
 }
 
 /** 

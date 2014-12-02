@@ -10,6 +10,9 @@
  */
 #define MAX_FNAME_LENGTH 12   /* Assume at most 12 characters (8.3) */
 
+/* uhh, pretty sure, 8 + '.' + 3 + '\0' = 13; it's impressive that this doesn't
+ crash -Neil */
+
 /* The maximum number of files to attempt to open or create.  NOTE: we
  * do not _require_ that you support this many files. This is just to
  * test the behavior of your code.

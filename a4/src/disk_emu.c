@@ -9,7 +9,9 @@
 FILE* fp = NULL;
 double L, p;
 double r;
+/* /\ these are perfect names for global vars; L lol -Neil */
 int BLOCK_SIZE, MAX_BLOCK, MAX_RETRY, lru;
+/* /\ why are you shouting? -Neil */
 
 /*----------------------------------------------------------*/
 /*Close the disk file filled when you don't need it anymore. */
@@ -31,9 +33,9 @@ int init_fresh_disk(char *filename, int block_size, int num_blocks)
     int i, j;
     
     /*Set up latency at 0.02 second*/
-    L = 00000.f;
+    L = 00000.f; /* <- /\ what? -Neil */
     /*Set up failure at 10%*/
-    p = -1.f;
+    p = -1.f; /* <- /\ what? -Neil */
     /*Set up max retry attempts after failure to 3*/
     MAX_RETRY = 3;
 
@@ -102,6 +104,8 @@ int read_blocks(int start_address, int nblocks, void *buffer)
 
     /*Sets up a temporary buffer*/
     void* blockRead = (void*) malloc(BLOCK_SIZE);
+
+	/* . . . don't pay attention to the glaring memory leak . . . -Neil */
 
     /*Checks that the data requested is within the range of addresses of the disk*/
     if (start_address + nblocks > MAX_BLOCK)
