@@ -7,8 +7,8 @@
  
  Simulated file system using a file that is 'block_size * no_blocks' bits long.
  
- The file pointers are 
- The first block has a file pointer
+ The first block has a FilePointer to the root directory, the FAT, and the
+ used block table.
  
  @author Neil
  @version 1
@@ -30,7 +30,7 @@ typedef struct { char data[512]; } Block;
 static const int block_size = sizeof(Block) / sizeof(char);
 static const int block_bits = (sizeof(Block) / sizeof(char)) << 3;
 
-#define NO_BLOCKS (256) /* used in two initialisations */
+#define NO_BLOCKS (256) /* ahhh, hate #defines but used in two initialisations */
 /* how big the is file on disk: no_blocks * block_size bytes; bit vector bytes */
 static const int    no_blocks = NO_BLOCKS;
 static const int no_blocks_hi = (NO_BLOCKS >> 3) + ((NO_BLOCKS & 0xFF) ? 1 : 0);
