@@ -65,16 +65,15 @@ struct DiskSfs {
  the root directory (only one level directory here), number of blocks for the
  FAT, and the number of data blocks, and number of free blocks." */
 struct Sfs {
-	int dir_size;
+	Block       free;
+	/* the file system */
+	int         dir_size, dir_memory, dir_next_memory;
 	struct Dir  *dir;
 	int         fat_size, fat_memory, fat_next_memory;
 	struct Fat  *fat;
-	/* keep track of the free space */
-	int         free_total;
-	Block       free;            /* "the free block list can be contained within a single block," thank you! */
 	/* this is used by readdir/rewinddir */
 	int         next_file_index;
-	/* the files are entirely in memory */
+	/* the open files are entirely in memory */
 	int         files_open;
 	struct OpenFile *open[128]; /* [MAX_FD]; to do the tests, >= 100 */
 	struct OpenFile *open_buffer;

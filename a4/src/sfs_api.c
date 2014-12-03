@@ -92,8 +92,8 @@ int mksfs(const int fresh) {
 		rmsfs();
 		return 0;
 	}
-	((FilePointer *)&bl)[0] = 5;
-	((FilePointer *)&bl)[1] = 10; /* works! */
+	/*((FilePointer *)&bl)[0] = 5;
+	((FilePointer *)&bl)[1] = 10; * works! */
 	block_map(&bl, "read in block 0");
 
 	/* do the conversion to memory (THIS DEPENDS ON ENDIANESS!)
@@ -118,9 +118,9 @@ int mksfs(const int fresh) {
 		return 0;
 	}
 
-	/* want to deal with free block (static!) asap to check for discrepencies */
+	/* want to deal with free block asap to check for discrepencies;
+	 fixme: check for discrepancies */
 	if(ds->free != 0) {
-		/* read free list block */
 		if(read_blocks(ds->free, 1, (void *)bl.data) != 1 || !free_query(&bl, 0)) { /* <- calling disk_emu! */
 			if(verbose) fprintf(stderr, "mksfs: free blocks (%d) bad?\n", ds->free);
 			sfs_errno = ERR_DISK;
@@ -128,12 +128,15 @@ int mksfs(const int fresh) {
 			return 0;
 		}
 		memcpy(sfs->free.data, bl.data, sizeof(Block));
-		/*sfs->free_total = ds->free_total;*/
+		/*sfs->free_total = ds->free_total;
+		 fixme: check sanity of all */
 	} else {
 		/* new superblock is used already */
 		free_set(&sfs->free, 0, -1);
 	}
 
+	if(!sfs->fat
+	
 	/* if we have a FAT, load it and check for errors; the simplifying
 	 assumption is that we're always going to have enough memory to store all
 	 the FAT */
@@ -150,10 +153,6 @@ int mksfs(const int fresh) {
 		fprintf(stderr, "Not implemented.\n");
 		exit(EXIT_FAILURE);
 #endif
-	}
-
-	for(i = 0; i < 20; i++) {
-		grow_fat();
 	}
 
 	free_map(&sfs->free, "blocks bv");
