@@ -22,7 +22,7 @@ struct Sfs             *sfs;
 
 /* private fuctions */
 static int openfile_cmp(const void *key, const void *elem);
-static int grow_fat(void);
+static void grow(int *a, int *b);
 static int free_query(const Block *free, const int block);
 static int free_set(Block *free, const int block, const int isSet);
 static int free_search(Block *free);
@@ -61,13 +61,11 @@ int mksfs(const int fresh) {
 		return 0;
 	}
 	memset(&sfs->free, 0, block_size);
-	sfs->fat_size        = 0;
-	sfs->fat_memory      = 0;
-	sfs->fat_next_memory = 1;
+	sfs->dir_size = sfs->dir_memory = 0; sfs->dir_next_memory = 1;
+	sfs->dir             = 0;
+	sfs->fat_size = sfs->fat_memory = 0; sfs->fat_next_memory = 1;
 	sfs->fat             = 0;
 	sfs->next_file_index = 0;
-/*//////////////////*/
-	/* pre-allocate max_files_open open files */
 	sfs->files_open      = 0;
 	sfs->open_buffer = (struct OpenFile *)(sfs + 1);
 	for(i = 0; i < max_files_open; i++) {
@@ -135,8 +133,11 @@ int mksfs(const int fresh) {
 		free_set(&sfs->free, 0, -1);
 	}
 
-	if(!sfs->fat
-	
+	if(ds->dir != 0) {
+		fprintf(stderr, "Not implemented.\n");
+		exit(EXIT_FAILURE);
+	}
+
 	/* if we have a FAT, load it and check for errors; the simplifying
 	 assumption is that we're always going to have enough memory to store all
 	 the FAT */
@@ -155,7 +156,22 @@ int mksfs(const int fresh) {
 #endif
 	}
 
+	/* test grow */
+	for(i = 0; i < 10; i++) {
+		struct Fat *fat;
+		grow(&sfs->fat_memory, &sfs->fat_next_memory);
+		if(!(fat = realloc(sfs->fat, sizeof(struct Fat) * sfs->fat_memory))) {
+			if(verbose) fprintf(stderr, "grow_fat: ERR_MALLOC.\n");
+			sfs_errno = ERR_MALLOC;
+			return 0;
+		}
+		sfs->fat = fat;
+		if(verbose) fprintf(stderr, "grow_fat: grew to %d entries.\n", sfs->fat_memory);
+	}
+
+	/* test order */
 	free_map(&sfs->free, "blocks bv");
+#if 0
 	sfs->files_open = 2;
 	strcpy(sfs->open_buffer[0].name, "foo");
 	strcpy(sfs->open_buffer[1].name, "bar");
@@ -169,7 +185,9 @@ int mksfs(const int fresh) {
 	for(i = 0; i < sfs->files_open; i++) {
 		fprintf(stderr, "[%d] %s\n", sfs->open[i]->id, sfs->open[i]->name);
 	}
-	
+	/* it was working, now it's not :[ */
+#endif
+
 	return -1;
 }
 
@@ -188,26 +206,16 @@ static int openfile_cmp(const void *key, const void *elem) {
 	return strcmp(((struct OpenFile *)key)->name, ((struct OpenFile *)elem)->name);
 }
 
-/** uses a Fibonacci thing */
-static int grow_fat(void) {
-	struct Fat *fat;
-	int prev =  sfs->fat_memory;
-	int   *a = &sfs->fat_memory;
-	int   *b = &sfs->fat_next_memory;
+/** Fibonacci growing thing.
+ This is beatiful, actually! I will definitely use this in future projects. */
+static void grow(int *a, int *b) {
+	int prev = *a;
 	*a ^= *b;
 	*b ^= *a;
 	*a ^= *b;
 	*b += *a;
-	/* avoids the 1, 1 */
+	/* make monotonic */
 	if(*a == prev) (*a)++;
-	if(!(fat = realloc(sfs->fat, sizeof(struct Fat) * sfs->fat_memory))) {
-		if(verbose) fprintf(stderr, "grow_fat: ERR_MALLOC.\n");
-		sfs_errno = ERR_MALLOC;
-		return 0;
-	}
-	sfs->fat = fat;
-	if(verbose) fprintf(stderr, "grow_fat: grew to %d entries.\n", sfs->fat_memory);
-	return -1;
 }
 
 /* @param free
