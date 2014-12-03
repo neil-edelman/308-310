@@ -507,13 +507,7 @@ void sfs_perror(const char *s) {
 
 
 
-/*if(!(fat = malloc(sizeof(struct Fat)))) {
-	if(verbose) perror("Sfs constructor");
-		sfs_errno = ERR_MALLOC;
-		rmsfs();
-		return 0;
-}*/
-
+/** creates a new file */
 struct File *new_file(const char *name) {
 	if(verbose) fprintf(stderr, "new_file: todo (%s.)\n", name);
 	sfs_errno = ERR_WTF;
@@ -542,10 +536,12 @@ static int grow_fat(void) {
 	return -1;
 }
 
+/** for bsearch */
 static int err_cmp(const void *key, const void *elem) {
 	return *(enum SfsError *)key - ((struct PrintError *)elem)->key;
 }
 
+/** for bsearch */
 static int openfile_cmp(const void *key, const void *elem) {
 	return strcmp(((struct OpenFile *)key)->name, ((struct OpenFile *)elem)->name);
 }
@@ -598,6 +594,7 @@ static int free_search(Block *free) {
 	return 0;
 }
 
+/** debug */
 static void free_map(const Block *free, const char *pretty) {
 	char *fre = (char *)free;
 	int i;
@@ -614,6 +611,7 @@ static void free_map(const Block *free, const char *pretty) {
 	fprintf(stderr, "(done.)\n");
 }
 
+/** debug */
 static void block_map(const Block *b, const char *pretty) {
 	int i;
 
