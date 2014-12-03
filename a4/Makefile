@@ -3,7 +3,7 @@
 PROJ  := sfs
 VA    := 1
 VB    := 0
-FILES := disk_emu sfs_ftest sfs_api
+FILES := disk_emu sfs_ftest sfs_api sfs_stdio sfs_dirent sfs_errno
 SDIR  := src
 BDIR  := bin
 BACK  := backup
