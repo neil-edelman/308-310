@@ -77,11 +77,12 @@ struct Sfs {
 	 pointer to the FAT, etc. */
 	FilePointer disk_fat;
 	FilePointer disk_free;
-	/* to compute this in the memory */
-	struct Fat *fat;
-	Block      free;            /* "the free block list can be contained within a single block," thank you! */
+	/* to compute this in the memory (uses Fibonacci) */
+	int         fat_size, fat_memory, fat_next_memory;
+	struct Fat  *fat;
+	Block       free;            /* "the free block list can be contained within a single block," thank you! */
 	/* the files are entirely in memory */
-	int files_open;             /* keep track of actual files open */
+	int         files_open;
 	struct OpenFile *open[128]; /* [MAX_FD]; to do the tests, >= 100 */
 	struct OpenFile *open_buffer;
 };
@@ -109,6 +110,7 @@ static const int      verbose = -1; /* error checking in the supplied programmes
 
 /* private fuctions */
 struct File *new_file(const char *name);
+static int grow_fat(void);
 static int err_cmp(const void *key, const void *elem);
 static int openfile_cmp(const void *key, const void *elem);
 static int free_query(const Block *free, const int block);
@@ -134,7 +136,8 @@ static struct File *file_index;
 	Boolean value; build up a new file system instead of loading one from disk.
  @return Non-zero on success, if 0, sets sfs_error. */
 int mksfs(const int fresh) {
-	Block b, *read;
+	Block bl;
+	void *read;
 	int (*disk)(char *, int, int) = fresh ? &init_fresh_disk : &init_disk;
 	int i;
 
@@ -157,17 +160,20 @@ int mksfs(const int fresh) {
 		rmsfs();
 		return 0;
 	}
-	sfs->disk_fat   = 0;
-	sfs->disk_free  = 0;
-	sfs->fat        = 0;
+	sfs->disk_free       = 0;
+	sfs->disk_fat        = 0;
 	memset(&sfs->free, 0, block_size);
-	/* pre-allocate all the open files */
-	sfs->files_open = 0;
+	sfs->fat_size        = 0;
+	sfs->fat_memory      = 0;
+	sfs->fat_next_memory = 1;
+	sfs->fat             = 0;
+	/* pre-allocate max_files_open open files */
+	sfs->files_open      = 0;
 	sfs->open_buffer = (struct OpenFile *)(sfs + 1);
 	for(i = 0; i < max_files_open; i++) {
 		struct OpenFile *open = sfs->open[i] = &sfs->open_buffer[i];
-		open->id    = i + 1;
-		open->inUse = 0;
+		open->id         = i + 1;
+		open->inUse      = 0;
 	}
 	/* fixme: just to test */
 	fprintf(stderr, "test sfs->open[1] #%p = %d\n", (void *)sfs->open[1], sfs->open[1]->id);
@@ -180,27 +186,64 @@ int mksfs(const int fresh) {
 	}
 
 	/* read in the superblock (0) */
-	if(read_blocks(0, 1, (void *)b.data) != 1) {
-		fprintf(stderr, "mksfs: couldn't read superblock.\n");
+	if(read_blocks(0, 1, (void *)bl.data) != 1) {                               /* <- calling disk_emu! */
+		if(verbose) fprintf(stderr, "mksfs: couldn't read superblock.\n");
 		sfs_errno = ERR_DISK;
 		rmsfs();
 		return 0;
 	}
-	block_map(&b, "read in block 0");
+	/* ((FilePointer *)&bl)[0] = 5;
+	((FilePointer *)&bl)[1] = 10; works! */
+	block_map(&bl, "read in block 0");
 
-	/* do the conversion to memory (THIS DEPENDS ON ENDIANESS FOR SPEED!) */
-	read = &b;
-	((char *)read)[0] = 3;
-	((char *)read)[2] = 45;
-	block_map(&b, "now 0");
-	sfs->disk_fat = *(((FilePointer *)read)++);
-	sfs->disk_free = *(((FilePointer *)read)++);
-	
-	
-	
-	fprintf(stderr, " ***** %d, %d\n", sfs->disk_fat, sfs->disk_free);
+	/* do the conversion to memory (THIS DEPENDS ON ENDIANESS!)
+	 *(((FilePointer *)read)++) "warning: target of assignment not really an
+	 lvalue; this will be a hard error in the future," but this is so long :[ */
+	read = &bl;
+	sfs->disk_fat  = *(FilePointer *)read;
+	read           = (void *)((FilePointer *)read + 1);
+	sfs->disk_free = *(FilePointer *)read;
+	read           = (void *)((FilePointer *)read + 1);
+	/* that's it! seems like a waste of space; maybe have the super-block also
+	 contain the free vector; that would be smart . . . but maybe too simpifying */
+	fprintf(stderr, "  ********* %d, %d\n", sfs->disk_fat, sfs->disk_free);
 
-	if(!free_query(&sfs->free, 0)) free_set(&sfs->free, 0, -1);
+	/* want to deal with free block (static!) asap to check for discrepencies */
+	if(sfs->disk_free != 0) {
+		if(read_blocks(sfs->disk_free, 1, (void *)bl.data) != 1 || !free_query(&bl, 0)) { /* <- calling disk_emu! */
+			if(verbose) fprintf(stderr, "mksfs: free blocks (%d) bad?\n", sfs->disk_free);
+			sfs_errno = ERR_DISK;
+			rmsfs();
+			return 0;
+		}
+		memcpy(sfs->free.data, bl.data, sizeof(Block));
+	} else {
+		/* superblock is used */
+		/*if(!free_query(&sfs->free, 0)) */free_set(&sfs->free, 0, -1);
+	}
+
+	/* if we have a FAT, load it and check for errors; the simplifying
+	 assumption is that we're always going to have enough memory to store all
+	 the FAT */
+	if(sfs->disk_fat != 0) {
+#if 0
+		if(read_blocks(sfs->disk_fat, 1, (void *)bl.data) != 1) {                /* <- calling disk_emu! */
+			if(verbose) fprintf(stderr, "mksfs: couldn't read fat, block %d.\n", sfs->disk_fat);
+			sfs_errno = ERR_DISK;
+			rmsfs();
+			return 0;
+		}
+		read = &bl;
+#else
+		fprintf(stderr, "Not implemented.\n");
+		exit(EXIT_FAILURE);
+#endif
+	}
+	
+	for(i = 0; i < 20; i++) {
+		grow_fat();
+	}
+
 	free_map(&sfs->free, "blocks bv");
 	sfs->files_open = 2;
 	strcpy(sfs->open_buffer[0].name, "foo");
@@ -279,6 +322,7 @@ int sfs_fopen(const char *name) {
 	}
 
 	/* search the fat for the file */
+	
 #if 0
 	already = bsearch(name,         /* key */
 					  sfs->fat,     /* base, num, size */
@@ -463,10 +507,39 @@ void sfs_perror(const char *s) {
 
 
 
+/*if(!(fat = malloc(sizeof(struct Fat)))) {
+	if(verbose) perror("Sfs constructor");
+		sfs_errno = ERR_MALLOC;
+		rmsfs();
+		return 0;
+}*/
+
 struct File *new_file(const char *name) {
 	if(verbose) fprintf(stderr, "new_file: todo (%s.)\n", name);
 	sfs_errno = ERR_WTF;
 	return 0;
+}
+
+/** uses a Fibonacci thing */
+static int grow_fat(void) {
+	struct Fat *fat;
+	int prev =  sfs->fat_memory;
+	int   *a = &sfs->fat_memory;
+	int   *b = &sfs->fat_next_memory;
+	*a ^= *b;
+	*b ^= *a;
+	*a ^= *b;
+	*b += *a;
+	/* avoids the 1, 1 */
+	if(*a == prev) (*a)++;
+	if(!(fat = realloc(sfs->fat, sizeof(struct Fat) * sfs->fat_memory))) {
+		if(verbose) fprintf(stderr, "grow_fat: ERR_MALLOC.\n");
+		sfs_errno = ERR_MALLOC;
+		return 0;
+	}
+	sfs->fat = fat;
+	if(verbose) fprintf(stderr, "grow_fat: grew to %d entries.\n", sfs->fat_memory);
+	return -1;
 }
 
 static int err_cmp(const void *key, const void *elem) {
@@ -519,7 +592,7 @@ static int free_set(Block *free, const int block, const int isSet) {
 	return -1;
 }
 
-/** Finds a block or returns 0. */
+/** Finds a block or returns 0. (First Fit -> Next Fit) */
 static int free_search(Block *free) {
 	fprintf(stderr, "Todo: free_search().\n");
 	return 0;
